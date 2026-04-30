@@ -8,4 +8,4 @@ SSH_PASSWORD = "your_ssh_password"
 #  WebDAV 实际监听的端口
 REMOTE_PORT = 8000
 # 本地映射的端口
-LOCAL_PORT = 8080
+LOCAL_PORT = 8000
