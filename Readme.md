@@ -18,7 +18,7 @@
 
 ```bash
 python3 -m venv .webdav_server
-source .webdav_server/Script/Activate
+source .webdav_server/bin/Activate
 pip install requirements.txt
 python3 start_server.py
 ```
@@ -38,7 +38,7 @@ python start_server.py
 2. 客户端:
    填充client_conf.py中需要填充的部分: SSH_HOST填充服务端的IP地址,SSH_PASSWORD填写服务端的密码.
 3. 启动zotero,依次点击: 编辑/设置/同步,将 "文件同步" 中的 "我的文库附件同步方式" 修改为 "WebDAV" :
-选择http,在://后的文本框填入:
-```localhost:8000```
-或者client_conf.py中自行修改的LOCAL_PORT.  
-4. 用户名和密码应当自行在server中设置,方便起见,本项目已提供演示用户名和密码,均填入 admin 即可开始同步Zotero数据.  
+   选择http,在://后的文本框填入:
+   ``localhost:8000``
+   或者client_conf.py中自行修改的LOCAL_PORT.
+4. 用户名和密码应当自行在server中设置,方便起见,本项目已提供演示用户名和密码,均填入 admin 即可开始同步Zotero数据.
