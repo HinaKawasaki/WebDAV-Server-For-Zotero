@@ -5,7 +5,9 @@ DB_USER = "webdav_server"
 DB_PASSWORD = "webdav"
 DB_NAME = "webdav"
 DB_TABLE = "dav_users"
+DB_PATH = "webdav_users.db"
 SHARE_DIR = "./zotero"
+
 # WebDav Server Conf
 config = {
     "host": "0.0.0.0",
