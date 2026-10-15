@@ -37,9 +37,6 @@ server/           WebDAV 服务端
   app.py          WsgiDAV 应用工厂
   start_server.py 启动入口
   manage.py       用户管理与迁移 CLI
-client/           隧道客户端
-  client_conf_example.py  配置模板（复制为 client_conf.py）
-  sshtunnel_client.py     自动重连的端口转发
 tools/            辅助脚本（dev_db_tunnel / prod_smoke / backup / ops_check）
 tests/            unittest 测试
 docs/             上线 Runbook（docs/DEPLOYMENT.md）
@@ -160,19 +157,15 @@ python -m server.manage adopt-shared admin --from ./zotero --apply
 
 ## 客户端
 
-```bash
-python3 -m venv .venv-client && source .venv-client/bin/activate
-pip install -r client/requirements.txt
-cp client/client_conf_example.py client/client_conf.py
-$EDITOR client/client_conf.py        # SSH_PKEY 推荐；WEBDAV_USER 填你的用户名
-python client/sshtunnel_client.py
-```
+隧道客户端已独立成单独项目：
+[Use_Paramiko_To_Start_SSH_Tunnel](https://github.com/HinaKawasaki/Use_Paramiko_To_Start_SSH_Tunnel)
+（多跳、断线指数退避重连、空闲存活探测）。
 
-隧道断开后会自动以指数退避（1s → 2s → 4s … 上限 60s）重连，直到你按 Ctrl+C 或发送 SIGTERM。
-启动横幅会打印应填入 Zotero 的完整 URL。
+**如果客户端与服务器在同一个 WireGuard 网段，其实不需要隧道**：让 Zotero 直接访问
+`http://<服务器的 VPN 地址>:8000/<用户名>/` 即可，部署方式见 `docs/DEPLOYMENT.md` §10.5。
 
 Zotero 中：`编辑 / 设置 / 同步` → 文件同步方式选 `WebDAV` → 地址填
-`http://127.0.0.1:<LOCAL_PORT>/<用户名>/`（注意**结尾的斜杠和用户名前缀**），用户名与密码使用
+`http://<地址>:<端口>/<用户名>/`（注意**结尾的斜杠和用户名前缀**），用户名与密码使用
 `server.manage adduser` 创建的账号。
 
 ## 本地开发：本机没有 MySQL 怎么办

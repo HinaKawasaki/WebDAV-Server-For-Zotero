@@ -7,7 +7,6 @@ venv/
 
 # Local configuration and secrets
 .env
-client/client_conf.py
 
 # Runtime data
 *.db

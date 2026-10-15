@@ -299,7 +299,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -u hello:'<口令>' \
 
 ## 7. 客户端切换（Zotero）
 
-1. 启动隧道：`python client/sshtunnel_client.py`（会打印应填的 URL）。
+1. 先解决通路：优先让客户端**经 WireGuard 直连**（见 §10.5，不需要隧道）；否则用独立项目
+   [Use_Paramiko_To_Start_SSH_Tunnel](https://github.com/HinaKawasaki/Use_Paramiko_To_Start_SSH_Tunnel)
+   把服务器的 8000 端口转发到本机 `127.0.0.1:8000`。
 2. Zotero → `编辑 / 设置 / 同步` → 文件同步 `WebDAV`：
    * `hello` 所在机器填 `http://127.0.0.1:8000/hello/`
    * `hello_ubuntu` 所在机器填 `http://127.0.0.1:8000/hello_ubuntu/`
