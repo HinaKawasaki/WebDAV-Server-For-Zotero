@@ -162,6 +162,17 @@ DB_CONNECT_TIMEOUT = _env_int("WEBDAV_DB_CONNECT_TIMEOUT", 5)
 DB_READ_TIMEOUT = _env_int("WEBDAV_DB_READ_TIMEOUT", 15)
 DB_WRITE_TIMEOUT = _env_int("WEBDAV_DB_WRITE_TIMEOUT", 15)
 
+# --------------------------------------------------------------------------- #
+# DAV state (dead properties and locks)
+# --------------------------------------------------------------------------- #
+#: Keep PROPPATCHed properties and locks in MariaDB instead of process memory,
+#: so they survive a restart.  Setting either to false restores WsgiDAV's
+#: in-memory implementation (which loses everything on restart).
+PERSIST_PROPERTIES = _env_bool("WEBDAV_PERSIST_PROPERTIES", True)
+PERSIST_LOCKS = _env_bool("WEBDAV_PERSIST_LOCKS", True)
+PROPERTIES_TABLE = _env("WEBDAV_PROPERTIES_TABLE", "dav_properties")
+LOCKS_TABLE = _env("WEBDAV_LOCKS_TABLE", "dav_locks")
+
 
 def db_settings() -> dict:
     """Return the database settings as a plain dict."""
@@ -204,6 +215,12 @@ def build_config() -> dict:
             "max_entries": AUTH_CACHE_MAX_ENTRIES,
             "epoch_file": str(AUTH_CACHE_EPOCH_FILE),
         },
+        "webdav_dav_state": {
+            "persist_properties": PERSIST_PROPERTIES,
+            "persist_locks": PERSIST_LOCKS,
+            "properties_table": PROPERTIES_TABLE,
+            "locks_table": LOCKS_TABLE,
+        },
     }
 
 
@@ -225,6 +242,12 @@ def redacted() -> dict:
             "throttle_attempts": LOGIN_MAX_ATTEMPTS,
             "throttle_base_penalty": LOGIN_BASE_PENALTY,
             "throttle_max_penalty": LOGIN_MAX_PENALTY,
+        },
+        "dav_state": {
+            "persist_properties": PERSIST_PROPERTIES,
+            "persist_locks": PERSIST_LOCKS,
+            "properties_table": PROPERTIES_TABLE,
+            "locks_table": LOCKS_TABLE,
         },
         "db": {
             "host": DB_HOST,

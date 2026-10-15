@@ -496,7 +496,54 @@ cd /home/ubuntu/webdav-server
 sudo -u ubuntu .venv/bin/python -m server.manage listusers
 ```
 
-### 10.4 让客户端直接走 WireGuard（可选，替代 SSH 隧道）
+### 10.4 DAV 状态表（v2.03 起，可选）
+
+v2.03 把死属性（`PROPPATCH`）与锁从进程内存搬进了 MariaDB，重启不再丢。**这是可选特性**：
+应用账号没有 `CREATE` 权限、或表尚未创建时，服务照常启动并回退到内存实现（行为与 v2.02 相同），
+只在日志里告警——不会像缺 `dav_users` 那样进入重启循环。要启用，由 DBA 建这两张表
+（仓库里已备好可直接执行的版本：`sudo mysql webdav < docs/schema_dav_state.sql`）：
+
+```sql
+CREATE TABLE IF NOT EXISTS `dav_properties` (
+    `ref_url`    VARCHAR(512) NOT NULL,
+    `prop_name`  VARCHAR(255) NOT NULL,
+    `prop_value` LONGTEXT     NOT NULL,
+    `ref_hash`   BINARY(32)   NOT NULL,
+    `name_hash`  BINARY(32)   NOT NULL,
+    `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+                              ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`ref_hash`, `name_hash`),
+    KEY `idx_dav_properties_url` (`ref_url`(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dav_locks` (
+    `lock_key`   VARCHAR(512) NOT NULL,
+    `lock_value` LONGTEXT     NOT NULL,
+    `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+                              ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`lock_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+```
+
+应用账号只需要这两张表的 `SELECT, INSERT, UPDATE, DELETE`（**不需要** `CREATE`）：
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON webdav.dav_properties TO 'webdav_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON webdav.dav_locks      TO 'webdav_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+验证（`initdb` 会顺带创建并打印状态）：
+
+```bash
+cd /home/ubuntu/webdav-server
+sudo -u ubuntu .venv/bin/python -m server.manage initdb
+#   [*] DAV properties: table=dav_properties (persistent), locks: table=dav_locks (persistent)
+```
+
+想显式关掉其中任一项：`WEBDAV_PERSIST_PROPERTIES=false` 或 `WEBDAV_PERSIST_LOCKS=false`。
+
+### 10.5 让客户端直接走 WireGuard（可选，替代 SSH 隧道）
 
 默认部署是「服务只监听 `127.0.0.1`，客户端经 SSH 隧道接入」。若客户端与服务器在同一
 个 WireGuard 网段，可以直连，省掉隧道这一层：

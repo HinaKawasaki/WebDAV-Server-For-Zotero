@@ -17,7 +17,7 @@ from wsgidav.mw.cors import Cors
 from wsgidav.request_resolver import RequestResolver
 from wsgidav.wsgidav_app import WsgiDAVApp
 
-from server import conf
+from server import conf, davstate
 from server.auth import MariaDBDomainController
 from server.mw import RequestGuard
 from server.provider import PerUserFilesystemProvider
@@ -77,9 +77,10 @@ def _build_provider(source: dict):
 def create_dav_app(main_config=None) -> WsgiDAVApp:
     """Build the WsgiDAV application.
 
-    ``webdav_db`` and ``webdav_auth`` travel inside the configuration dict and
-    are picked up by :class:`server.auth.MariaDBDomainController`, which keeps
-    all mutable state on the instance.
+    ``webdav_db``, ``webdav_auth`` and ``webdav_dav_state`` travel inside the
+    configuration dict and are picked up by
+    :class:`server.auth.MariaDBDomainController` and
+    :mod:`server.davstate`, which keep all mutable state on their instances.
     """
     source = conf.build_config() if main_config is None else copy.deepcopy(main_config)
 
@@ -94,6 +95,10 @@ def create_dav_app(main_config=None) -> WsgiDAVApp:
         "default_to_digest": False,
     }
     source["dir_browser"] = {"enable": False}
+
+    # Dead properties and locks live in MariaDB, so they survive a restart.
+    # Attach after the copy above: these objects own locks and are shared.
+    davstate.attach(source)
 
     if source.get("suppress_version_info", True):
         suppress_version_info()

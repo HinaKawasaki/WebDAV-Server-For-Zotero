@@ -24,7 +24,7 @@ if __package__ in (None, ""):
 
 from cheroot import wsgi
 
-from server import __version__, conf, db, users
+from server import __version__, conf, davstate, db, users
 from server.app import create_dav_app
 
 logger = logging.getLogger("server.start_server")
@@ -57,6 +57,10 @@ def prepare() -> None:
     users.ensure_schema(settings)
     schema = users.check_schema(settings)
     for warning in schema["warnings"]:
+        logger.warning("%s", warning)
+
+    state = davstate.ensure_schema(settings, conf.PROPERTIES_TABLE, conf.LOCKS_TABLE)
+    for warning in state["warnings"]:
         logger.warning("%s", warning)
 
 

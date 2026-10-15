@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.03 — 2026-10-16
+
+DAV 状态落库：死属性（`PROPPATCH`）与锁存进 MariaDB，**重启不再丢**。
+
+### 新增
+
+- `server/davstate.py`：只替换 WsgiDAV 的存储层，**锁与属性的策略代码仍用上游实现**
+  - `MariaDBPropertyManager`（继承 `PropertyManager`）→ 属性存 `dav_properties`
+  - `MariaDBLockStorage`（继承 `LockStorageDict`）→ 锁存 `dav_locks`；锁字典里的
+    `owner` 是 bytes，用**显式标记的 JSON 编码**而不是 pickle（DB 里可读，也不会反序列化
+    不可信数据）；启动时自动清理过期锁
+  - URL 以 sha256 作为主键前缀，规避 utf8mb4 索引长度上限；属性值原样保存
+- 表结构由 `ensure_schema` 在启动时按需创建，`manage initdb` 也会创建并打印状态
+- `WEBDAV_PERSIST_PROPERTIES` / `WEBDAV_PERSIST_LOCKS` / `WEBDAV_PROPERTIES_TABLE` /
+  `WEBDAV_LOCKS_TABLE` 可调
+
+### 设计取舍
+
+- **可选特性，绝不拖垮服务**：应用账号没有 `CREATE` 权限或表尚未创建时，服务照常启动，
+  日志里大声告警并回退到内存实现（行为与 v2.02 完全一致），不会进入重启循环
+- **不做级联删除**：WsgiDAV 在 MOVE/DELETE 时逐个处理子项，父目录若级联删除会让它遍历到
+  已消失的行（实测踩到的 bug）；孤儿行可借助 `ref_url` 列排查
+- 只要求 `SELECT/INSERT/UPDATE/DELETE`，维持最小权限
+
+### 工程
+
+- 新增 `tests/test_davstate.py`（33 项）：重启后属性/锁仍在、copy/move/remove 语义、
+  过期锁不被复活、SQL 语句形状、无 `CREATE` 权限时的降级，以及**穿过完整 WSGI 栈的
+  端到端用例**（PUT → PROPPATCH → 重建 app → PROPFIND 仍能读回属性）
+- 全套 160 项测试通过
+
 ## v2.02 — 2026-10-16
 
 性能与可用性：认证结果缓存、登录节流改为指数退避、运维脚本与 CI 收口。

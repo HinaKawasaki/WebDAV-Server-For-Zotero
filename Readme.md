@@ -300,6 +300,15 @@ Basic 认证没有会话概念，因此每个请求都要查一次数据库并�
 `WEBDAV_LOGIN_MAX_PENALTY`（默认 300 秒），并在 401 响应上返回 `Retry-After`。
 认证成功会清空该 key 的历史失败；`WEBDAV_LOGIN_MAX_ATTEMPTS=0` 可关闭节流。
 
+## 状态持久化
+
+死属性（`PROPPATCH`）与锁默认存在 MariaDB（`dav_properties` / `dav_locks`），**重启后依然有效**；
+实现上只替换了 WsgiDAV 的存储层（继承 `PropertyManager` / `LockStorageDict`），锁与属性的
+策略逻辑仍用上游代码。表由启动流程按需创建，应用账号只需要四类 DML 权限。
+
+这是可选特性：账号没有 `CREATE` 权限或表不存在时，服务照常运行并回退到内存实现（仅在日志里
+告警）。用 `WEBDAV_PERSIST_PROPERTIES=false` / `WEBDAV_PERSIST_LOCKS=false` 可显式关闭。
+
 ## 上线
 
 面向现有生产实例的原地升级步骤、验证清单与回滚方案见

@@ -28,7 +28,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server import authcache, conf, db, migration, passwords, storage, users
+from server import authcache, conf, davstate, db, migration, passwords, storage, users
 
 logger = logging.getLogger("server.manage")
 
@@ -94,6 +94,17 @@ def cmd_initdb(args) -> int:
     )
     for warning in schema["warnings"]:
         print(f"[!] {warning}")
+
+    state = davstate.ensure_schema(settings, conf.PROPERTIES_TABLE, conf.LOCKS_TABLE)
+    print(
+        f"[*] DAV properties: table={state['properties_table']} "
+        f"({'persistent' if state['properties_ready'] else 'in memory only'}), "
+        f"locks: table={state['locks_table']} "
+        f"({'persistent' if state['locks_ready'] else 'in memory only'})"
+    )
+    for warning in state["warnings"]:
+        print(f"[!] {warning}")
+
     _describe_layout()
 
     if args.admin_user:

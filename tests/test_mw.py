@@ -119,6 +119,10 @@ class RequestGuardEndToEndTests(unittest.TestCase):
         self.store = {"alice": passwords.hash_password("pw")}
         for patcher in (
             mock.patch.object(conf, "SHARE_DIR", self.share),
+            # this fake database only serves the user table, so keep the DAV
+            # state managers in WsgiDAV's in-memory implementation here
+            mock.patch.object(conf, "PERSIST_PROPERTIES", False),
+            mock.patch.object(conf, "PERSIST_LOCKS", False),
             mock.patch.object(db, "connect", fake_connect(self.store)),
         ):
             patcher.start()
