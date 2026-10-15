@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+client/client_conf.py
+
+# Runtime data
+*.db
+*.sqlite3
+*.log
+zotero/
+server/zotero/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/

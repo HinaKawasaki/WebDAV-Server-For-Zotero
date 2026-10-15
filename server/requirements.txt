@@ -1,2 +1,3 @@
-cheroot
-wsgidav
+cheroot==11.1.2
+PyMySQL==1.1.1
+WsgiDAV==4.3.3
