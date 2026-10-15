@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.03.1 — 2026-10-16
+
+日志降噪：把两条"正常状态却报 WARNING"的消息降为 INFO，让
+`journalctl -p warning` 重新只表示"需要处理的事"。只影响日志级别，行为不变。
+
+- `users.ensure_schema`：账号没有 `CREATE` 权限但表已存在时记 INFO（这正是部署
+  文档 §9 推荐的刻意最小权限配置）；表确实缺失时仍然报警并给出可执行的补救
+- `users.check_schema`：`password VARCHAR(64)` 这种"放得下但偏紧"的提示改放进新的
+  `notes` 列表，`prepare()` 以 INFO、`manage initdb` 以 `[*]` 输出；真正需要处理的
+  状态仍走 `warnings`（WARNING / `[!]`）
+- 保留为 WARNING 的一条：`WEBDAV_HOST` 不是回环地址（Basic 凭据明文传输，安全相关）
+
 ## v2.03 — 2026-10-16
 
 DAV 状态落库：死属性（`PROPPATCH`）与锁存进 MariaDB，**重启不再丢**。

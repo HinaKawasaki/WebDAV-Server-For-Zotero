@@ -94,6 +94,8 @@ def cmd_initdb(args) -> int:
     )
     for warning in schema["warnings"]:
         print(f"[!] {warning}")
+    for note in schema.get("notes", []):
+        print(f"[*] {note}")
 
     state = davstate.ensure_schema(settings, conf.PROPERTIES_TABLE, conf.LOCKS_TABLE)
     print(

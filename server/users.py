@@ -129,8 +129,10 @@ def ensure_schema(settings) -> None:
     except db.DatabaseError as exc:
         if exc.code not in _PERMISSION_ERROR_CODES:
             raise
-        logger.warning(
-            "no privilege to create %r (%s); checking the existing table", table, exc
+        # DML-only is the documented least-privilege setup, so this is not a
+        # problem as long as the table is really there.
+        logger.info(
+            "no privilege to create %r (%s); using the existing table", table, exc
         )
         if not _table_exists(settings, table):
             raise db.DatabaseError(
@@ -144,7 +146,8 @@ def ensure_schema(settings) -> None:
 def check_schema(settings) -> dict:
     """Inspect the table and report whether stored hashes can fit.
 
-    Returns a dict with the observed column widths and a list of warnings.
+    Returns a dict with the observed column widths, a list of ``warnings``
+    (states that need attention) and a list of ``notes`` (advisory only).
     Raises :class:`server.db.DatabaseError` when the ``password`` column is too
     narrow for the current hash format, because creating or migrating an
     account would then fail at runtime.
@@ -157,6 +160,7 @@ def check_schema(settings) -> dict:
         "password_column": None,
         "required_password_length": required,
         "warnings": [],
+        "notes": [],
     }
 
     try:
@@ -192,7 +196,7 @@ def check_schema(settings) -> dict:
             f"VARCHAR({PASSWORD_COLUMN_LENGTH}) NOT NULL;"
         )
     if password_width is not None and password_width < PASSWORD_COLUMN_LENGTH:
-        info["warnings"].append(
+        info["notes"].append(
             f"`{table}`.`password` is VARCHAR({password_width}), which fits the "
             f"current {required}-character hashes but leaves little room for "
             f"future changes"

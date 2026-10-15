@@ -240,12 +240,15 @@ class SchemaCheckTests(unittest.TestCase):
         )
         self.assertEqual(info["password_column"], 255)
         self.assertEqual(info["warnings"], [])
+        self.assertEqual(info["notes"], [])
 
-    def test_varchar64_is_accepted_with_a_warning(self):
+    def test_varchar64_is_accepted_with_a_note(self):
+        # fits the current hashes: advisory only, must not show up as a warning
         info = self._check(
             [{"COLUMN_NAME": "password", "CHARACTER_MAXIMUM_LENGTH": 64}]
         )
-        self.assertEqual(len(info["warnings"]), 1)
+        self.assertEqual(info["warnings"], [])
+        self.assertEqual(len(info["notes"]), 1)
 
     def test_introspection_failure_is_not_fatal(self):
         with mock.patch.object(db, "connect", self._connect), mock.patch.object(

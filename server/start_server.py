@@ -58,6 +58,8 @@ def prepare() -> None:
     schema = users.check_schema(settings)
     for warning in schema["warnings"]:
         logger.warning("%s", warning)
+    for note in schema.get("notes", []):
+        logger.info("%s", note)
 
     state = davstate.ensure_schema(settings, conf.PROPERTIES_TABLE, conf.LOCKS_TABLE)
     for warning in state["warnings"]:
