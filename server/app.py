@@ -6,17 +6,52 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import sys
 
+from wsgidav import util as wsgidav_util
+from wsgidav.dir_browser import WsgiDavDirBrowser
+from wsgidav.error_printer import ErrorPrinter
 from wsgidav.fs_dav_provider import FilesystemProvider
+from wsgidav.http_authenticator import HTTPAuthenticator
+from wsgidav.mw.cors import Cors
+from wsgidav.request_resolver import RequestResolver
 from wsgidav.wsgidav_app import WsgiDAVApp
 
 from server import conf
 from server.auth import MariaDBDomainController
+from server.mw import RequestGuard
 from server.provider import PerUserFilesystemProvider
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["create_dav_app"]
+
+
+def build_middleware_stack():
+    """Return the middleware stack, outermost first.
+
+    ``RequestGuard`` sits directly inside ``ErrorPrinter`` so the DAVErrors it
+    raises for malformed input are rendered normally instead of surfacing as a
+    generic 500 with the exception text.
+    """
+    return [
+        Cors,
+        ErrorPrinter,
+        RequestGuard,
+        HTTPAuthenticator,
+        WsgiDavDirBrowser,
+        RequestResolver,
+    ]
+
+
+def suppress_version_info() -> None:
+    """Hide the WsgiDAV/Python version from error pages and headers.
+
+    WsgiDAV only honours its own ``suppress_version_info`` option in its CLI
+    entry point, so the public strings have to be reset here.
+    """
+    wsgidav_util.public_wsgidav_info = "WsgiDAV"
+    wsgidav_util.public_python_info = f"Python/{sys.version_info[0]}"
 
 
 def _build_provider(source: dict):
@@ -49,6 +84,7 @@ def create_dav_app(main_config=None) -> WsgiDAVApp:
     source = conf.build_config() if main_config is None else copy.deepcopy(main_config)
 
     source["provider_mapping"] = {"/": _build_provider(source)}
+    source["middleware_stack"] = build_middleware_stack()
     source["http_authenticator"] = {
         "domain_controller": MariaDBDomainController,
         "accept_basic": True,
@@ -58,5 +94,8 @@ def create_dav_app(main_config=None) -> WsgiDAVApp:
         "default_to_digest": False,
     }
     source["dir_browser"] = {"enable": False}
+
+    if source.get("suppress_version_info", True):
+        suppress_version_info()
 
     return WsgiDAVApp(source)

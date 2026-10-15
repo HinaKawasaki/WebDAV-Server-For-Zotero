@@ -237,6 +237,7 @@ salt 与哈希用 base64url（无填充），配合默认参数编出来是 **56
 | `WEBDAV_REALM` | `Zotero WebDAV Storage` | Basic 认证 realm |
 | `WEBDAV_LOG_LEVEL` | `INFO` | 日志级别 |
 | `WEBDAV_LOG_FILE` | 空 | 设置后额外写轮转文件日志 |
+| `WEBDAV_SUPPRESS_VERSION_INFO` | `true` | 错误页与响应头不再暴露 WsgiDAV、Python 版本 |
 | `WEBDAV_NUM_THREADS` | `20` | cheroot 工作线程数 |
 | `WEBDAV_REQUEST_QUEUE_SIZE` | `128` | 监听 backlog |
 | `WEBDAV_SOCKET_TIMEOUT` | `60` | 连接超时（秒） |
@@ -271,4 +272,7 @@ python -m unittest discover -s tests -v
 * 登录失败达到阈值后按「用户名 + 来源地址」临时锁定。
 * SQL 全部使用参数化查询；表名经过严格白名单校验。
 * 数据库不可用时认证**失败关闭**（fail closed）并记录明确的错误原因。
+* 畸形输入会被规范化成正常响应而不是 500：无法解析的 `Authorization: Basic` 头按匿名处理
+  （干净 401），超长文件名/路径返回 414，`ENOSPC` 返回 507；异常细节只进服务端日志，
+  不会回显给客户端。
 * 涉及 DAV「死属性」的内存存储不跨重启保留；锁同样只存在于进程内存中，单实例部署足够。

@@ -24,7 +24,7 @@ if __package__ in (None, ""):
 
 from cheroot import wsgi
 
-from server import conf, db, users
+from server import __version__, conf, db, users
 from server.app import create_dav_app
 
 logger = logging.getLogger("server.start_server")
@@ -62,6 +62,7 @@ def prepare() -> None:
 
 def main(argv=None) -> int:
     setup_logging()
+    logger.info("Zotero WebDAV server %s starting", __version__)
 
     try:
         prepare()

@@ -107,6 +107,9 @@ SHUTDOWN_TIMEOUT = _env_int("WEBDAV_SHUTDOWN_TIMEOUT", 10)
 LOG_LEVEL = (_env("WEBDAV_LOG_LEVEL", "INFO") or "INFO").upper()
 LOG_FILE = _env("WEBDAV_LOG_FILE")
 
+#: Hide the WsgiDAV/Python version in error pages and response headers.
+SUPPRESS_VERSION_INFO = _env_bool("WEBDAV_SUPPRESS_VERSION_INFO", True)
+
 # --------------------------------------------------------------------------- #
 # Storage
 # --------------------------------------------------------------------------- #
@@ -164,6 +167,7 @@ def build_config() -> dict:
         "port": PORT,
         "verbose": VERBOSE,
         "provider_mapping": {"/": str(SHARE_DIR)},
+        "suppress_version_info": SUPPRESS_VERSION_INFO,
         # In-memory dead-property store: better than None for clients that issue
         # PROPPATCH, but note it does not survive a restart.
         "property_manager": True,

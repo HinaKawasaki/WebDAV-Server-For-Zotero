@@ -360,7 +360,37 @@ sudo cp -a /home/ubuntu/webdav-backup-<STAMP>/WebDAV_Server /home/ubuntu/
 
 ---
 
-## 10. 一页速查
+## 10. 实测数据与已知限制
+
+上线后对生产实例做过一轮附加测试（经 SSH 隧道，与 Zotero 同路径），结论如下。
+
+### 服务端能力（本机回环，不经过网络）
+
+| 操作 | 10 MiB |
+| --- | --- |
+| PUT | ~180 MB/s |
+| GET | ~140 MB/s |
+
+16 并发 PROPFIND、8 并发 1 MiB PUT 全部成功；DAV 方法矩阵（MKCOL/PUT/GET/HEAD/PROPFIND/
+PROPPATCH/LOCK/UNLOCK/COPY/MOVE/DELETE）、死属性、锁语义均符合预期；跨用户访问、
+`..` 逃逸、跨用户 `Destination` 一律 403。
+
+### ⚠️ 云主机出网带宽是下载瓶颈
+
+| 路径 | 下载（服务器→客户端） | 上传（客户端→服务器） |
+| --- | --- | --- |
+| 服务端本机 | 140 MB/s | 180 MB/s |
+| 经 SSH 隧道（paramiko 客户端） | **0.48 MB/s** | 6.2 MB/s |
+| 经原生 `ssh -L` | **0.49 MB/s** | 19.9 MB/s |
+| **裸 SSH（完全不经 WebDAV）** | **0.50 MB/s** | 10.8 MB/s |
+
+连裸 SSH 都只有 0.50 MB/s，说明既不是 WebDAV 也不是隧道实现，而是**这台云主机
+对出网流量限速在约 4 Mbps**（入网未限）。
+
+对 Zotero 的影响：上传附件正常，**下载/同步附件会被压在 ~0.5 MB/s**（50 MB 附件约 100 秒）。
+要改善只能在云控制台提升带宽上限，或把服务迁到带宽更大的机器；代码层面无法规避。
+
+## 11. 一页速查
 
 ```bash
 # —— 备份 ——
