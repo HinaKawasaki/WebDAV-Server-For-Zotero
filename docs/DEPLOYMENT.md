@@ -14,7 +14,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 生产主机 | `172.16.1.1`（`VM-0-9-ubuntu`，腾讯云；WireGuard 地址 `172.16.1.1`，公网 `101.34.62.188`） |
+| 生产主机 | `172.16.1.1`（`VM-0-9-ubuntu`，腾讯云；WireGuard 地址 `172.16.1.1`，公网地址略）） |
 | systemd 单元 | `webdav.service`（`User=ubuntu`，`After/Wants=mariadb.service`） |
 | 旧部署目录 | `/home/ubuntu/WebDAV_Server`（`WorkingDirectory`） |
 | 旧启动命令 | `/home/ubuntu/WebDAV_Server/.webdav/bin/python /home/ubuntu/WebDAV_Server/start_server.py` |
@@ -102,7 +102,7 @@ echo "backup dir: /home/ubuntu/webdav-backup-$STAMP"
 ```bash
 # A) 先 push 到 GitHub，再在服务器上 clone
 cd /home/ubuntu
-git clone https://github.com/HareKawasaki/WebDAV-Server-For-Zotero.git webdav-server
+git clone https://github.com/HinaKawasaki/WebDAV-Server-For-Zotero.git webdav-server
 
 # B) 或者从笔记本直接同步整个目录（不要同步 .git 之外的临时文件）
 #    在笔记本上执行：
