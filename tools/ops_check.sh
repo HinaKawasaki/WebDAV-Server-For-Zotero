@@ -5,7 +5,9 @@
 # Exit code: 0 healthy, 1 warning, 2 critical - so a cron job or systemd timer
 # can alert on any non-zero result.
 #
-#   tools/ops_check.sh [--port 8000] [--path /] [--warn 80] [--crit 90]
+#   tools/ops_check.sh [--port 8000] [--warn 80] [--crit 90]
+#                      [--path INFO]   probe path; defaults to /<user>/ when
+#                                      --user is given, otherwise /
 #                      [--data-dir DIR] [--url http://127.0.0.1:8000]
 #                      [--user NAME --password PW]        # deep check: log in
 #                      [--skip service|listener|http|db|disk]   (repeatable)
@@ -29,7 +31,7 @@ source "$(dirname "$(readlink -f "$0")")/lib.sh"
 ROOT="$(repo_root)"
 PORT=""
 URL=""
-PATH_INFO="/"
+PATH_INFO=""
 WARN=80
 CRIT=90
 DATA_DIR=""
