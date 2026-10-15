@@ -360,7 +360,107 @@ sudo cp -a /home/ubuntu/webdav-backup-<STAMP>/WebDAV_Server /home/ubuntu/
 
 ---
 
-## 10. 实测数据与已知限制
+## 10. 原地升级与排障
+
+### 10.1 升级步骤
+
+代码与 `.env`、`.venv` 分离，升级只覆盖代码：
+
+```bash
+# 笔记本：打新版本的包（不含 .git / .env / .venv）
+cd <repo> && git archive --format=tar.gz --prefix=webdav-server/ -o /tmp/webdav-server-<rev>.tar.gz HEAD
+scp /tmp/webdav-server-<rev>.tar.gz <server>:/tmp/
+
+# 服务器：解包覆盖 + 重启 + 自检
+sudo tar -xzf /tmp/webdav-server-<rev>.tar.gz -C /home/ubuntu/
+sudo chown -R ubuntu:ubuntu /home/ubuntu/webdav-server
+sudo systemctl restart webdav.service
+systemctl show webdav.service -p ActiveState -p SubState -p MainPID -p NRestarts
+sudo journalctl -u webdav.service -n 20 --no-pager
+```
+
+升级后跑一遍生产冒烟（见 §11）：
+
+```bash
+WEBDAV_USER=hello WEBDAV_PASSWORD=... WEBDAV_OTHER_USER=hello_ubuntu WEBDAV_OTHER_PASSWORD=... \
+  python3 tools/prod_smoke.py
+```
+
+回滚就是把上一版的 tar 再解一次并重启。删掉的旧目录不在包里，回滚前确认一下
+systemd 单元的 `WorkingDirectory` / `ExecStart` 指向的位置仍然存在。
+
+### 10.2 踩过的坑（务必照做）
+
+**① GNU tar 的 `--exclude` 是位置敏感的**
+
+必须写在文件参数**之前**，否则不但不生效，tar 还会直接报错退出：
+
+```bash
+# 错误：exclude 写在 webdav-server 之后
+tar -czf out.tgz -C /home/ubuntu webdav-server --exclude=webdav-server/.venv
+# 正确
+tar -czf out.tgz -C /home/ubuntu --exclude=webdav-server/.venv webdav-server
+```
+
+**② `set -o pipefail` 下不要写 `tar -tzf … | grep -q …`**
+
+`grep -q` 命中后立即退出，tar 会收到 SIGPIPE，管道整体被判为失败——
+**校验会误报**。把清单整体读进变量再匹配：
+
+```bash
+LISTING=$(tar -tzf "$ARCHIVE")
+case "$LISTING" in *webdav-server/server/start_server.py*) ;; *) echo 不完整; exit 1;; esac
+```
+
+**③ 数据库口令必须是纯 ASCII**
+
+PyMySQL 以 latin-1 编码口令，非 ASCII 会在客户端直接抛错，服务连不上库：
+
+```
+'latin-1' codec can't encode characters in position 0-4: ordinal not in range(256)
+```
+
+`ALTER USER … IDENTIFIED BY '<纯 ASCII 口令>'`，同时把 `.env` 的 `WEBDAV_DB_PASSWORD`
+改成同一个值。
+
+**④ 改 `.env` 不要靠手输**
+
+用确定性写法并校验（避免多余空格、引号或漏改）：
+
+```bash
+ENV=/home/ubuntu/webdav-server/.env
+sudo -u ubuntu cp -a "$ENV" "$ENV.bak.$(date +%s)"
+sudo -u ubuntu sed -i '/^WEBDAV_DB_PASSWORD=/d' "$ENV"
+printf 'WEBDAV_DB_PASSWORD=%s\n' '<纯 ASCII 口令>' | sudo -u ubuntu tee -a "$ENV" >/dev/null
+sudo -u ubuntu chmod 600 "$ENV"
+sudo -u ubuntu grep -c '^WEBDAV_DB_PASSWORD=<纯 ASCII 口令>$' "$ENV"   # 必须输出 1
+
+# 用同一份配置直接验证数据库连通性，比看服务日志更快
+cd /home/ubuntu/webdav-server && sudo -u ubuntu .venv/bin/python -m server.manage listusers
+```
+
+### 10.3 服务起不来时的判断
+
+`systemctl status` 出现下面这组，说明是**启动期**失败（设计如此，fail-fast 而不是静默假活）：
+
+```
+Active: activating (auto-restart) (Result: exit-code)
+Main PID: <pid> (code=exited, status=1/FAILURE)
+```
+
+真实原因一定在 `journalctl -u webdav.service` 里：
+
+| 日志 | 含义 | 处理 |
+| --- | --- | --- |
+| `startup failed: Cannot connect … (1045, Access denied)` | 口令不一致或已轮换 | 见 §10.2 ③④ |
+| `'latin-1' codec can't encode characters` | `.env` 里是非 ASCII 口令 | 改成纯 ASCII |
+| `startup failed: Cannot connect … (2003, Connection refused)` | MariaDB 没跑 | `systemctl status mariadb` |
+| `column … password is VARCHAR(n) but the current hash format needs 56` | 列宽不足 | 按提示执行打印出来的 `ALTER TABLE` |
+
+`MainPID` 与 `NRestarts` 是判断「是否真的换上了新代码」最直接的证据：
+`systemctl restart` 后 `MainPID` 必须变化，`NRestarts` 必须为 0。
+
+## 11. 实测数据与已知限制
 
 上线后对生产实例做过一轮附加测试（经 SSH 隧道，与 Zotero 同路径），结论如下。
 
@@ -390,7 +490,7 @@ PROPPATCH/LOCK/UNLOCK/COPY/MOVE/DELETE）、死属性、锁语义均符合预期
 对 Zotero 的影响：上传附件正常，**下载/同步附件会被压在 ~0.5 MB/s**（50 MB 附件约 100 秒）。
 要改善只能在云控制台提升带宽上限，或把服务迁到带宽更大的机器；代码层面无法规避。
 
-## 11. 一页速查
+## 12. 一页速查
 
 ```bash
 # —— 备份 ——

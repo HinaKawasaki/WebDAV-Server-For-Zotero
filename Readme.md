@@ -40,9 +40,10 @@ server/           WebDAV 服务端
 client/           隧道客户端
   client_conf_example.py  配置模板（复制为 client_conf.py）
   sshtunnel_client.py     自动重连的端口转发
-tools/            开发辅助脚本
+tools/            开发辅助脚本（dev_db_tunnel.sh / prod_smoke.py）
 tests/            unittest 测试
 docs/             上线 Runbook（docs/DEPLOYMENT.md）
+CHANGELOG.md      版本记录
 ```
 
 ## 环境要求
@@ -257,7 +258,19 @@ python -m unittest discover -s tests -v
 ```
 
 覆盖：密码哈希与旧格式迁移、配置解析与校验、登录节流、用户表读写（使用假数据库）、
-客户端退避与隧道参数、每用户目录命名、路径隔离与符号链接防护、共享目录迁移。
+客户端退避与隧道参数、每用户目录命名、路径隔离与符号链接防护、共享目录迁移、
+畸形请求头与文件系统错误到正常 DAV 错误的转换。
+
+对**已部署实例**的冒烟回归（经隧道，与 Zotero 同路径，自动清理，不会写坏数据）：
+
+```bash
+WEBDAV_USER=hello WEBDAV_PASSWORD=... \
+WEBDAV_OTHER_USER=hello_ubuntu WEBDAV_OTHER_PASSWORD=... \
+python3 tools/prod_smoke.py
+```
+
+凭据只从环境变量读取，不落仓库。涵盖认证边界、跨用户隔离、DAV 方法矩阵、锁、
+死属性、COPY/MOVE、路径编码、吞吐与并发，共 47 项，退出码即结果。
 
 ## 上线
 
