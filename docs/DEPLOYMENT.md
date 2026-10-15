@@ -478,13 +478,53 @@ Main PID: <pid> (code=exited, status=1/FAILURE)
 
 | 日志 | 含义 | 处理 |
 | --- | --- | --- |
-| `startup failed: Cannot connect … (1045, Access denied)` | 口令不一致或已轮换 | 见 §10.2 ③④ |
+| `startup failed: Cannot connect … (1045, Access denied)` | `.env` 里的口令与数据库不一致：写错、少字符、含非 ASCII、或被手改过 | 见 §10.2 ③④；并用 `awk -F= '/^WEBDAV_DB_PASSWORD=/{print length($2)}' .env` 核对长度 |
+| `1129 Host 'localhost' is blocked because of many connection errors` | 连续失败连接触发了 MariaDB 的主机封锁 | `sudo mysql -e "FLUSH HOSTS"` |
+| `start-limit-hit`（`systemctl restart` 报） | systemd 因反复失败放弃重启 | `sudo systemctl reset-failed webdav.service` 后再重启 |
 | `'latin-1' codec can't encode characters` | `.env` 里是非 ASCII 口令 | 改成纯 ASCII |
 | `startup failed: Cannot connect … (2003, Connection refused)` | MariaDB 没跑 | `systemctl status mariadb` |
 | `column … password is VARCHAR(n) but the current hash format needs 56` | 列宽不足 | 按提示执行打印出来的 `ALTER TABLE` |
 
 `MainPID` 与 `NRestarts` 是判断「是否真的换上了新代码」最直接的证据：
 `systemctl restart` 后 `MainPID` 必须变化，`NRestarts` 必须为 0。
+
+**三十秒定位法**：服务起不来时先跑一次 `manage`——它走的是与服务器**完全相同**的
+配置校验与连库路径，错误会直接打在屏幕上，不用翻 journal：
+
+```bash
+cd /home/ubuntu/webdav-server
+sudo -u ubuntu .venv/bin/python -m server.manage listusers
+```
+
+### 10.4 让客户端直接走 WireGuard（可选，替代 SSH 隧道）
+
+默认部署是「服务只监听 `127.0.0.1`，客户端经 SSH 隧道接入」。若客户端与服务器在同一
+个 WireGuard 网段，可以直连，省掉隧道这一层：
+
+1. `.env` 里把 `WEBDAV_HOST` 设成 VPN 地址（例如 `172.16.1.1`）；
+2. 加一个 drop-in（**不要用 `systemctl edit` 配 heredoc，它会开交互式编辑器**）：
+
+   ```bash
+   sudo mkdir -p /etc/systemd/system/webdav.service.d
+   sudo tee /etc/systemd/system/webdav.service.d/wireguard.conf >/dev/null <<'EOF'
+   [Unit]
+   After=wg-quick@home.service
+   Wants=wg-quick@home.service
+   EOF
+   ```
+
+3. `sudo systemctl daemon-reload && sudo systemctl restart webdav.service`
+4. 验证：`ss -ltn | grep 8000` 显示的是 VPN 地址；客户端能直接访问
+   `http://<VPN 地址>:8000/<用户名>/`。
+
+要点：
+
+- 绑定具体地址后**回环不再提供服务**，`tools/ops_check.sh` 会自动跟随 `WEBDAV_HOST`
+  （通配地址回落 127.0.0.1），所以巡检不用改；
+- **MariaDB 保持 `bind-address = 127.0.0.1` 不变**——应用连库仍走回环，数据库不对
+  VPN 暴露；
+- 改了 `.env` 之后先跑 §10.3 的 `manage listusers` 再重启，能避免"改一处、服务起不来"
+  的来回折腾。
 
 ## 11. 实测数据与已知限制
 

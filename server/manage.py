@@ -28,7 +28,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server import conf, db, migration, passwords, storage, users
+from server import authcache, conf, db, migration, passwords, storage, users
 
 logger = logging.getLogger("server.manage")
 
@@ -73,6 +73,15 @@ def _describe_layout() -> None:
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
+def _invalidate_auth_cache() -> None:
+    """Make running servers forget cached password verifications."""
+    if not authcache.invalidate(conf.AUTH_CACHE_EPOCH_FILE):
+        print(
+            "[!] could not touch the auth cache generation file; a password "
+            "change may take up to WEBDAV_AUTH_CACHE_SECONDS to apply"
+        )
+
+
 def cmd_initdb(args) -> int:
     settings = _settings()
     Path(conf.SHARE_DIR).mkdir(parents=True, exist_ok=True)
@@ -96,6 +105,7 @@ def cmd_initdb(args) -> int:
             print(f"[!] user {args.admin_user!r} already exists - password unchanged")
         else:
             directory = storage.ensure_user_directory(conf.SHARE_DIR, args.admin_user)
+            _invalidate_auth_cache()
             print(f"[*] created admin user {args.admin_user!r}")
             print(f"[*] storage directory: {directory}")
             print(f"[*] Zotero WebDAV URL: {_webdav_url(args.admin_user)}")
@@ -118,6 +128,7 @@ def cmd_adduser(args) -> int:
         print(f"[!] {exc}")
         return 1
     directory = storage.ensure_user_directory(conf.SHARE_DIR, args.username)
+    _invalidate_auth_cache()
     print(f"[*] created user {args.username!r}")
     print(f"[*] storage directory: {directory}")
     print(f"[*] Zotero WebDAV URL: {_webdav_url(args.username)}")
@@ -132,6 +143,7 @@ def cmd_passwd(args) -> int:
     except users.UserNotFoundError as exc:
         print(f"[!] {exc}")
         return 1
+    _invalidate_auth_cache()
     print(f"[*] password updated for {args.username!r}")
     return 0
 
@@ -141,6 +153,7 @@ def cmd_deluser(args) -> int:
     if not users.delete_user(settings, args.username):
         print(f"[!] user {args.username!r} does not exist")
         return 1
+    _invalidate_auth_cache()
     print(f"[*] deleted user {args.username!r}")
 
     directory = storage.user_directory(conf.SHARE_DIR, args.username)

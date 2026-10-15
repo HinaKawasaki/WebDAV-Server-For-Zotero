@@ -22,6 +22,7 @@ import base64
 import binascii
 import errno
 import logging
+import math
 
 # Importing wsgidav.util first is required: wsgidav.dav_error imports it back.
 from wsgidav import util  # noqa: F401
@@ -40,6 +41,10 @@ from wsgidav.mw.base_mw import BaseMiddleware
 logger = logging.getLogger(__name__)
 
 __all__ = ["RequestGuard"]
+
+#: ``environ`` key the domain controller uses to tell this middleware how long
+#: a throttled client should wait before trying again.
+RETRY_AFTER_ENVIRON_KEY = "server.mw.retry_after"
 
 #: errno -> HTTP status for errors coming from the filesystem layer.
 _OS_ERROR_STATUS = {
@@ -106,11 +111,23 @@ class RequestGuard(BaseMiddleware):
     def __call__(self, environ, start_response):
         self.sanitize_basic_auth(environ)
 
+        def start_response_with_retry_after(status, headers, exc_info=None):
+            # Tell a throttled client when it may try again.  The hint is set by
+            # the domain controller on ``environ`` while the inner app runs.
+            if status.startswith("401"):
+                retry_after = environ.get(RETRY_AFTER_ENVIRON_KEY)
+                if retry_after:
+                    headers = list(headers)
+                    if not any(name.lower() == "retry-after" for name, _ in headers):
+                        seconds = max(1, math.ceil(float(retry_after)))
+                        headers.append(("Retry-After", str(seconds)))
+            return start_response(status, headers, exc_info)
+
         # The inner app may be a generator (GET streams the body), so the
         # exception can surface while iterating - mirror what ErrorPrinter does.
         app_iter = None
         try:
-            app_iter = self.next_app(environ, start_response)
+            app_iter = self.next_app(environ, start_response_with_retry_after)
             yield from app_iter
         except OSError as exc:
             logger.warning(

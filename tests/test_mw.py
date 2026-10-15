@@ -165,6 +165,21 @@ class RequestGuardEndToEndTests(unittest.TestCase):
         )
         self.assertEqual(result["code"], 207)
 
+    def test_throttled_login_answers_with_retry_after(self):
+        # exhaust the default attempt budget with wrong passwords
+        for _ in range(10):
+            wsgi_request(
+                self.app,
+                make_environ("PROPFIND", "/alice/", credentials=("alice", "nope")),
+            )
+        result = wsgi_request(
+            self.app, make_environ("PROPFIND", "/alice/", credentials=("alice", "pw"))
+        )
+        self.assertEqual(result["code"], 401)
+        headers = {name.lower(): value for name, value in result["headers"]}
+        self.assertIn("retry-after", headers)
+        self.assertGreaterEqual(int(headers["retry-after"]), 1)
+
     def test_wrong_password_is_still_401(self):
         result = wsgi_request(
             self.app, make_environ("PROPFIND", "/alice/", credentials=("alice", "nope"))

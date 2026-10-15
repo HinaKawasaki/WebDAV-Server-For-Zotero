@@ -13,7 +13,9 @@ import logging
 from wsgidav.dc.base_dc import BaseDomainController
 
 from server import users
+from server.authcache import AuthCache
 from server.db import DatabaseError
+from server.mw import RETRY_AFTER_ENVIRON_KEY
 from server.throttle import LoginThrottle
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,14 @@ class MariaDBDomainController(BaseDomainController):
         self.throttle = LoginThrottle(
             max_attempts=auth_conf.get("login_max_attempts", 10),
             window_seconds=auth_conf.get("login_window_seconds", 300),
+            base_penalty=auth_conf.get("login_base_penalty", 2),
+            max_penalty=auth_conf.get("login_max_penalty", 300),
+        )
+        cache_conf = config.get("webdav_auth_cache") or {}
+        self.cache = AuthCache(
+            ttl_seconds=cache_conf.get("ttl_seconds", 0),
+            max_entries=cache_conf.get("max_entries", 512),
+            epoch_file=cache_conf.get("epoch_file"),
         )
 
     def __str__(self):
@@ -56,15 +66,25 @@ class MariaDBDomainController(BaseDomainController):
     def basic_auth_user(self, realm, user_name, password, environ) -> bool:
         key = self._client_key(user_name, environ)
 
-        if self.throttle.is_locked(key):
-            retry_after = self.throttle.retry_after(key)
+        retry_after = self.throttle.retry_after(key)
+        if retry_after > 0.0:
             logger.warning(
                 "basic auth blocked by throttle for user %r from %s (retry in %.0fs)",
                 user_name,
                 (environ or {}).get("REMOTE_ADDR", "?"),
                 retry_after,
             )
+            if isinstance(environ, dict):
+                # RequestGuard turns this into a Retry-After header.
+                environ[RETRY_AFTER_ENVIRON_KEY] = retry_after
             return False
+
+        if self.cache.check(user_name, password):
+            # Verified a moment ago: skip the database round trip and the
+            # (expensive) scrypt verification, but still clear any accumulated
+            # failures so a stale client cannot keep this account penalised.
+            self.throttle.reset(key)
+            return True
 
         try:
             ok = users.authenticate(self.db_settings, user_name, password)
@@ -77,6 +97,7 @@ class MariaDBDomainController(BaseDomainController):
 
         if ok:
             self.throttle.reset(key)
+            self.cache.store(user_name, password)
             return True
 
         self.throttle.record_failure(key)

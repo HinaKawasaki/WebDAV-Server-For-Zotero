@@ -59,7 +59,12 @@ done
 
 load_dotenv "$ROOT/.env"
 PORT="${PORT:-$(env_or "${WEBDAV_PORT:-}" 8000)}"
-URL="${URL:-http://127.0.0.1:$PORT}"
+# Probe the address the server actually binds: with WEBDAV_HOST=172.16.1.1
+# (VPN direct) loopback is not served at all.  A wildcard is not connectable,
+# so fall back to loopback for it.
+bind_host="$(env_or "${WEBDAV_HOST:-}" 127.0.0.1)"
+case "$bind_host" in 0.0.0.0 | :: | "") bind_host="127.0.0.1" ;; esac
+URL="${URL:-http://$bind_host:$PORT}"
 DATA_DIR="${DATA_DIR:-${WEBDAV_SHARE_DIR:-}}"
 PATH_INFO="${PATH_INFO:-/${PROBE_USER:+$PROBE_USER/}}"
 case "$PATH_INFO" in /*) ;; *) PATH_INFO="/$PATH_INFO" ;; esac

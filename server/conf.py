@@ -128,8 +128,26 @@ PER_USER_STORAGE = _env_bool("WEBDAV_PER_USER_STORAGE", True)
 # Authentication
 # --------------------------------------------------------------------------- #
 REALM = _env("WEBDAV_REALM", "Zotero WebDAV Storage")
+
+#: Failed logins for one key (user + source address) are remembered for
+#: ``LOGIN_WINDOW_SECONDS``; once there are ``LOGIN_MAX_ATTEMPTS`` of them the
+#: key must wait a penalty that doubles per extra failure, up to
+#: ``LOGIN_MAX_PENALTY`` seconds.  0 attempts disables the throttle.
 LOGIN_MAX_ATTEMPTS = _env_int("WEBDAV_LOGIN_MAX_ATTEMPTS", 10)
 LOGIN_WINDOW_SECONDS = _env_int("WEBDAV_LOGIN_WINDOW_SECONDS", 300)
+LOGIN_BASE_PENALTY = _env_int("WEBDAV_LOGIN_BASE_PENALTY", 2)
+LOGIN_MAX_PENALTY = _env_int("WEBDAV_LOGIN_MAX_PENALTY", 300)
+
+#: A successful authentication is remembered for this long so that a burst of
+#: requests from one client does not repeat the database round trip and the
+#: scrypt verification every time.  0 disables the cache.
+AUTH_CACHE_SECONDS = _env_int("WEBDAV_AUTH_CACHE_SECONDS", 45)
+AUTH_CACHE_MAX_ENTRIES = _env_int("WEBDAV_AUTH_CACHE_MAX_ENTRIES", 512)
+#: Touching this file invalidates every cached verification; ``manage.py`` does
+#: that on adduser/passwd/deluser so a changed password applies immediately.
+AUTH_CACHE_EPOCH_FILE = Path(
+    _env("WEBDAV_AUTH_CACHE_EPOCH_FILE", str(SHARE_DIR / ".auth-cache.epoch"))
+).expanduser()
 
 # --------------------------------------------------------------------------- #
 # Database (MariaDB / MySQL)
@@ -178,6 +196,13 @@ def build_config() -> dict:
             "realm": REALM,
             "login_max_attempts": LOGIN_MAX_ATTEMPTS,
             "login_window_seconds": LOGIN_WINDOW_SECONDS,
+            "login_base_penalty": LOGIN_BASE_PENALTY,
+            "login_max_penalty": LOGIN_MAX_PENALTY,
+        },
+        "webdav_auth_cache": {
+            "ttl_seconds": AUTH_CACHE_SECONDS,
+            "max_entries": AUTH_CACHE_MAX_ENTRIES,
+            "epoch_file": str(AUTH_CACHE_EPOCH_FILE),
         },
     }
 
@@ -195,6 +220,12 @@ def redacted() -> dict:
         "share_dir": str(SHARE_DIR),
         "per_user_storage": PER_USER_STORAGE,
         "realm": REALM,
+        "auth": {
+            "cache_seconds": AUTH_CACHE_SECONDS,
+            "throttle_attempts": LOGIN_MAX_ATTEMPTS,
+            "throttle_base_penalty": LOGIN_BASE_PENALTY,
+            "throttle_max_penalty": LOGIN_MAX_PENALTY,
+        },
         "db": {
             "host": DB_HOST,
             "port": DB_PORT,

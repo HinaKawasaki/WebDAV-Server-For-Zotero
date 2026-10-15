@@ -285,8 +285,20 @@ tools/backup.sh --dest /var/backups/webdav --keep 14
 ```
 
 两个脚本都从 `<仓库>/.env` 读配置，真实环境变量优先；`ops_check.sh --quiet`
-只在有问题时输出。`.github/workflows/ci.yml` 会在每次推送时用
-Python 3.9 / 3.12 / 3.14 跑单元测试，并执行 `ruff check`。
+只在有问题时输出，并按 `WEBDAV_HOST` 推导探测地址。`.github/workflows/ci.yml` 会在每次
+推送时用 Python 3.9 / 3.12 / 3.14 跑单元测试，并执行 `ruff check`。
+
+## 性能与登录保护
+
+Basic 认证没有会话概念，因此每个请求都要查一次数据库并跑一次 scrypt——生产实测
+约 **46 ms/请求**。成功认证的结果会被缓存 `WEBDAV_AUTH_CACHE_SECONDS` 秒（默认 45），
+命中即跳过这两步：本地基准 **97 ms → 0.7 ms（131×）**。只缓存成功，键是口令的 HMAC
+（进程内随机密钥）；`manage passwd` / `deluser` 会立刻让缓存失效。
+
+登录节流采用**指数退避**：超过 `WEBDAV_LOGIN_MAX_ATTEMPTS`（默认 10）次失败后，每次
+失败的等待从 `WEBDAV_LOGIN_BASE_PENALTY`（默认 2 秒）翻倍，封顶
+`WEBDAV_LOGIN_MAX_PENALTY`（默认 300 秒），并在 401 响应上返回 `Retry-After`。
+认证成功会清空该 key 的历史失败；`WEBDAV_LOGIN_MAX_ATTEMPTS=0` 可关闭节流。
 
 ## 上线
 

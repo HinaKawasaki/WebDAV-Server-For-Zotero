@@ -1,5 +1,46 @@
 # Changelog
 
+## v2.02 — 2026-10-16
+
+性能与可用性：认证结果缓存、登录节流改为指数退避、运维脚本与 CI 收口。
+
+### 性能
+
+- 新增认证结果短 TTL 缓存（`WEBDAV_AUTH_CACHE_SECONDS`，默认 45 秒）：命中即跳过
+  数据库往返与 scrypt 校验。本地基准单请求 **97 ms → 0.7 ms（131×）**；生产实测
+  认证开销约 46 ms/请求，Zotero 的同步突发里绝大多数请求都能命中。
+  只缓存成功、键是口令的 HMAC（进程内随机密钥）、容量有上限（`WEBDAV_AUTH_CACHE_MAX_ENTRIES`）。
+- 世代文件（`WEBDAV_AUTH_CACHE_EPOCH_FILE`）：`manage adduser/passwd/deluser` 会 touch 它，
+  运行中的服务器随即丢弃全部缓存——**改密立即生效**，不必等 TTL 到期。
+
+### 可用性（登录节流）
+
+- 从"锁定整个观察窗口（默认 5 分钟）"改为**指数退避**：超过阈值后每次失败的等待以
+  `WEBDAV_LOGIN_BASE_PENALTY`（默认 2 秒）起步翻倍，封顶 `WEBDAV_LOGIN_MAX_PENALTY`
+  （默认 300 秒）。手抖敲错几次口令只付出几秒代价，持续爆破仍会被拖慢。
+- 被节流时在 401 响应上返回 `Retry-After`，客户端可以据此退避。
+- 认证成功（含缓存命中）会清空该 key 的历史失败，避免一个客户端把账号长期拖在惩罚里。
+- `WEBDAV_LOGIN_MAX_ATTEMPTS=0` 可完全关闭节流。
+
+### 工具
+
+- 新增 `tools/backup.sh`：备份 `dav_users` 表与存储目录，支持 `archive/rsync/skip`
+  三种数据模式与保留份数；口令不进进程列表（临时 `my.cnf` 权限 600）。
+- 新增 `tools/ops_check.sh`：服务 / 端口 / HTTP / 数据库 / 磁盘水位巡检，退出码
+  0=正常 1=告警 2=严重，`--quiet` 只在异常时输出，可接 cron 或 systemd timer。
+  它按 `.env` 的 `WEBDAV_HOST` 推导探测地址（通配地址回落到回环）。
+- 新增 `tools/lib.sh`：上面两个脚本共用的 `.env` 解析（环境变量优先）。
+
+### 工程
+
+- 新增 `.github/workflows/ci.yml`：Python 3.9 / 3.12 / 3.14 跑全部单元测试，外加
+  `ruff check`；新增 `ruff.toml` 并修掉全部 lint 问题。
+
+### 文档
+
+- `docs/DEPLOYMENT.md` 补充：`.env` 口令必须是纯 ASCII **且长度与数据库一致**、
+  `1045`/`1129`/`start-limit-hit` 的处置、以及"让客户端直接走 WireGuard"的部署方式。
+
 ## v2.01 — 2026-10-15
 
 首个上生产的重构版本：安全与可靠性修复 + 每用户独立存储。
