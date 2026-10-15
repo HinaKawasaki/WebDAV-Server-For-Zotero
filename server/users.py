@@ -64,7 +64,7 @@ def _check_username(username: str) -> str:
     password and be deleted.
     """
     if not isinstance(username, str):
-        raise ValueError("username must be a string")
+        raise TypeError("username must be a string")
     if not username:
         raise ValueError("username must not be empty")
     if len(username) > USERNAME_MAX_LENGTH:

@@ -40,7 +40,7 @@ server/           WebDAV 服务端
 client/           隧道客户端
   client_conf_example.py  配置模板（复制为 client_conf.py）
   sshtunnel_client.py     自动重连的端口转发
-tools/            开发辅助脚本（dev_db_tunnel.sh / prod_smoke.py）
+tools/            辅助脚本（dev_db_tunnel / prod_smoke / backup / ops_check）
 tests/            unittest 测试
 docs/             上线 Runbook（docs/DEPLOYMENT.md）
 CHANGELOG.md      版本记录
@@ -271,6 +271,22 @@ python3 tools/prod_smoke.py
 
 凭据只从环境变量读取，不落仓库。涵盖认证边界、跨用户隔离、DAV 方法矩阵、锁、
 死属性、COPY/MOVE、路径编码、吞吐与并发，共 47 项，退出码即结果。
+
+## 运维
+
+```bash
+# 健康巡检：服务 / 端口 / HTTP / 数据库 / 磁盘水位
+# 退出码 0=正常 1=告警 2=严重，便于接 cron 或 systemd timer
+tools/ops_check.sh --data-dir /home/ubuntu/webdav-data \
+                   --user hello --password "$WEBDAV_PASSWORD"
+
+# 备份数据库表与存储目录（默认保留最近 14 份；恢复方式见脚本头部注释）
+tools/backup.sh --dest /var/backups/webdav --keep 14
+```
+
+两个脚本都从 `<仓库>/.env` 读配置，真实环境变量优先；`ops_check.sh --quiet`
+只在有问题时输出。`.github/workflows/ci.yml` 会在每次推送时用
+Python 3.9 / 3.12 / 3.14 跑单元测试，并执行 `ruff check`。
 
 ## 上线
 

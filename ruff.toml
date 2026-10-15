@@ -1,0 +1,30 @@
+# Ruff configuration.
+#
+# Note: the import order in server/mw.py, server/provider.py and
+# tests/test_provider.py is load-bearing - `wsgidav.util` must be imported
+# before `wsgidav.dav_error`, otherwise wsgidav's own circular-import guard
+# trips.  Those files are therefore exempt from the import-sorting rule.
+#
+# EXE is deliberately not selected: this checkout lives on an NTFS mount where
+# git does not track the executable bit (core.fileMode=false), so a shebang
+# check would be noise.
+
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "SIM", "PIE", "RUF", "TRY"]
+ignore = [
+    "E501",   # long lines: readable URLs and test descriptions win here
+    "TRY003", # we build exception messages at the raise site on purpose
+    "TRY300", # try/except/return style: an extra else block would not help
+    "TRY400", # expected failures get a concise message, not a traceback
+]
+
+[lint.per-file-ignores]
+"server/mw.py" = ["I001"]
+"server/provider.py" = ["I001"]
+"tests/test_provider.py" = ["I001"]
+
+[lint.isort]
+known-first-party = ["server", "client", "tests"]

@@ -42,9 +42,10 @@ class EnvHelperTests(unittest.TestCase):
             self.assertEqual(conf._env_int("X", 7), 42)
 
     def test_env_int_invalid(self):
-        with mock.patch.dict(os.environ, {"X": "abc"}, clear=True):
-            with self.assertRaises(conf.ConfigurationError):
-                conf._env_int("X", 7)
+        with mock.patch.dict(os.environ, {"X": "abc"}, clear=True), self.assertRaises(
+            conf.ConfigurationError
+        ):
+            conf._env_int("X", 7)
 
     def test_env_bool(self):
         for raw, expected in (

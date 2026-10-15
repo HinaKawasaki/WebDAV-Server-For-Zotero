@@ -132,7 +132,7 @@ def run(settings=None, stop_event=None, max_attempts=None) -> int:
         try:
             tunnel = build_tunnel(settings)
             tunnel.start()
-        except Exception as exc:  # noqa: BLE001 - every failure means "retry"
+        except Exception as exc:  # every failure means "retry"
             if tunnel is not None:
                 with contextlib.suppress(Exception):
                     tunnel.stop()

@@ -206,9 +206,8 @@ class EnsureSchemaTests(unittest.TestCase):
             db,
             "execute",
             side_effect=db.DatabaseError("(2013, 'Lost connection')", code=2013),
-        ):
-            with self.assertRaises(db.DatabaseError):
-                users.ensure_schema(SETTINGS)
+        ), self.assertRaises(db.DatabaseError):
+            users.ensure_schema(SETTINGS)
 
 
 class SchemaCheckTests(unittest.TestCase):

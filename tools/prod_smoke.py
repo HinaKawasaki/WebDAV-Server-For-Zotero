@@ -31,7 +31,6 @@ import http.client
 import os
 import sys
 import time
-import uuid
 from urllib.parse import quote, urlsplit
 
 DEFAULT_URL = "http://127.0.0.1:8000"
@@ -122,8 +121,12 @@ def main() -> int:
     client.expect("B2 plain .. traversal -> 403", "PROPFIND", f"{base}/../x/", 403)
     client.expect("B3 encoded .. traversal -> 403", "PROPFIND", f"{base}/%2e%2e/x/", 403)
     client.expect("B4 prefix sibling -> 403", "PROPFIND", f"/{user}_evil/", 403)
+    if other_user and other_password:
+        client.expect("B5 the other account can reach its own root -> 207",
+                      "PROPFIND", f"/{other_user}/", 207,
+                      user=other_user, password=other_password)
     if other_user:
-        client.expect(f"B5 other user's prefix -> 403", "PROPFIND", f"/{other_user}/", 403)
+        client.expect("B5b other user's prefix -> 403", "PROPFIND", f"/{other_user}/", 403)
         client.expect("B6 GET other user -> 403", "GET", f"/{other_user}/x", 403)
         client.expect("B7 PUT other user -> 403", "PUT", f"/{other_user}/x", 403, body=b"x")
     else:

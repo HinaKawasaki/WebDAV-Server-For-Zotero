@@ -357,6 +357,32 @@ sudo cp -a /home/ubuntu/webdav-backup-<STAMP>/WebDAV_Server /home/ubuntu/
 5. **确认安全组**：`8000` 端口不应对公网开放（当前已挡住，保持即可）。
 6. **日志**：需要留存时在 `.env` 里设 `WEBDAV_LOG_FILE=/home/ubuntu/webdav-server/logs/server.log`
    （内置 5MB × 5 轮转，无额外依赖）。
+7. **备份**（目前完全没有备份，这是最大的单点风险）：
+
+   ```bash
+   # 手动跑一次，确认输出与体积
+   cd /home/ubuntu/webdav-server
+   sudo -u ubuntu tools/backup.sh --dest /home/ubuntu/webdav-backups --keep 14
+
+   # 接 cron（每天 03:17；注意备份目录不要和 WEBDAV_SHARE_DIR 放同一个文件系统）
+   #   17 3 * * *  /home/ubuntu/webdav-server/tools/backup.sh --dest /home/ubuntu/webdav-backups --keep 14
+   ```
+
+   恢复：`gunzip -c webdav-db-<stamp>.sql.gz | mysql webdav`；数据目录
+   `tar -xzf webdav-data-<stamp>.tar.gz -C /home/ubuntu`。存储树很大时改用
+   `--data-mode rsync`（只做镜像，不留历史）或 `--data-mode skip` 只备表。
+
+8. **巡检**（退出码 0/1/2，可直接接告警）：
+
+   ```bash
+   cd /home/ubuntu/webdav-server
+   sudo -u ubuntu tools/ops_check.sh --data-dir /home/ubuntu/webdav-data \
+        --warn 80 --crit 90 --user hello --password '<WebDAV 口令>'
+   # cron: */15 * * * *  ... --quiet --user hello --password '...' || 告警
+   ```
+
+   不带 `--user` 时只做匿名探测（期望 401），带了则会真实登录（期望 207），
+   顺带验证数据库链路。
 
 ---
 

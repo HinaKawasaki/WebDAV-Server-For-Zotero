@@ -111,8 +111,7 @@ class RequestGuard(BaseMiddleware):
         app_iter = None
         try:
             app_iter = self.next_app(environ, start_response)
-            for chunk in app_iter:
-                yield chunk
+            yield from app_iter
         except OSError as exc:
             logger.warning(
                 "filesystem error for %s %s: %s",

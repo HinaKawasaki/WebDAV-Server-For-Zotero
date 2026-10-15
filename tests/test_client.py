@@ -1,5 +1,6 @@
 # tests/test_client.py
 import unittest
+from typing import ClassVar
 from unittest import mock
 
 from client import sshtunnel_client as client
@@ -17,8 +18,8 @@ class Settings:
 
 
 class FakeForwarder:
-    instances = []
-    fail_times = 0
+    instances: ClassVar[list] = []
+    fail_times: ClassVar[int] = 0
 
     def __init__(self, address, **kwargs):
         self.address = address
@@ -99,9 +100,10 @@ class BuildTunnelTests(unittest.TestCase):
         self.assertEqual(kwargs["ssh_private_key_password"], "unlock")
 
     def test_missing_driver_is_reported(self):
-        with mock.patch.object(client, "SSHTunnelForwarder", None):
-            with self.assertRaises(RuntimeError):
-                client.build_tunnel(Settings)
+        with mock.patch.object(client, "SSHTunnelForwarder", None), self.assertRaises(
+            RuntimeError
+        ):
+            client.build_tunnel(Settings)
 
 
 class RunLoopTests(unittest.TestCase):
@@ -131,9 +133,10 @@ class RunLoopTests(unittest.TestCase):
                 if self.is_active:
                     stop.set()
 
-        with mock.patch.object(client, "SSHTunnelForwarder", StoppingForwarder):
-            with mock.patch.object(client, "_print_banner"):
-                result = client.run(Settings, stop_event=stop)
+        with mock.patch.object(
+            client, "SSHTunnelForwarder", StoppingForwarder
+        ), mock.patch.object(client, "_print_banner"):
+            result = client.run(Settings, stop_event=stop)
         self.assertEqual(result, 0)
         self.assertEqual(len(StoppingForwarder.instances), 3)
 

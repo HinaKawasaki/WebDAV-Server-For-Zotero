@@ -280,7 +280,7 @@ def main(argv=None) -> int:
     )
     try:
         return args.func(args)
-    except (conf.ConfigurationError, db.DatabaseError, ValueError) as exc:
+    except (conf.ConfigurationError, db.DatabaseError, TypeError, ValueError) as exc:
         print(f"[!] {exc}", file=sys.stderr)
         return 1
 

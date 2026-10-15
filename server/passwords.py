@@ -34,8 +34,8 @@ __all__ = [
     "MAX_HASH_LENGTH",
     "SCRYPT_PREFIX",
     "generate_password",
-    "hash_password",
     "hash_length",
+    "hash_password",
     "looks_hashed",
     "verify_password",
 ]
@@ -180,8 +180,6 @@ def looks_hashed(stored: str) -> bool:
     """Return True if ``stored`` is in one of the recognised hash formats."""
     if not isinstance(stored, str):
         return False
-    return (
-        stored.startswith(SCRYPT_PREFIX + "$")
-        or stored.startswith(_SHA256_PREFIX + "$")
-        or _is_sha256_hex(stored)
-    )
+    return stored.startswith(
+        (SCRYPT_PREFIX + "$", _SHA256_PREFIX + "$")
+    ) or _is_sha256_hex(stored)
