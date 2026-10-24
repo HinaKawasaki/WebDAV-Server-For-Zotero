@@ -1,4 +1,4 @@
 # server/__init__.py
 """Zotero WebDAV server package."""
 
-__version__ = "2.03.1"
+__version__ = "2.4"

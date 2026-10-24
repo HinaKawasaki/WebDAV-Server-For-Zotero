@@ -8,6 +8,9 @@ from server import db, passwords, users
 
 SETTINGS = {"table": "dav_users"}
 
+#: A password that satisfies the policy (>= 12 characters).
+STRONG = "correct-horse-battery"
+
 
 class FakeCursor:
     def __init__(self, store):
@@ -44,7 +47,10 @@ class FakeCursor:
         elif norm.startswith("insert"):
             name, digest = params
             if name in self.store:
-                raise db.DatabaseError("(1062, \"Duplicate entry 'x'\")")
+                raise db.DatabaseError(
+                    "Duplicate entry 'alice' for key 'uq_dav_users_username'",
+                    code=1062,
+                )
             self.store[name] = digest
             self.rowcount = 1
         elif norm.startswith("delete"):
@@ -89,36 +95,63 @@ class UserStoreTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def test_add_and_authenticate(self):
-        users.add_user(SETTINGS, "alice", "s3cret")
-        self.assertTrue(users.authenticate(SETTINGS, "alice", "s3cret"))
+        users.add_user(SETTINGS, "alice", STRONG)
+        self.assertTrue(users.authenticate(SETTINGS, "alice", STRONG))
         self.assertFalse(users.authenticate(SETTINGS, "alice", "wrong"))
-        self.assertFalse(users.authenticate(SETTINGS, "nobody", "s3cret"))
-        self.assertFalse(users.authenticate(SETTINGS, "", "s3cret"))
+        self.assertFalse(users.authenticate(SETTINGS, "nobody", STRONG))
+        self.assertFalse(users.authenticate(SETTINGS, "", STRONG))
         self.assertFalse(users.authenticate(SETTINGS, "alice", ""))
 
     def test_password_is_not_stored_in_clear(self):
-        users.add_user(SETTINGS, "alice", "s3cret")
-        self.assertNotIn("s3cret", self.store["alice"])
+        users.add_user(SETTINGS, "alice", STRONG)
+        self.assertNotIn(STRONG, self.store["alice"])
         self.assertTrue(self.store["alice"].startswith("scrypt$"))
 
     def test_duplicate_user(self):
-        users.add_user(SETTINGS, "alice", "s3cret")
+        users.add_user(SETTINGS, "alice", STRONG)
         with self.assertRaises(users.UserExistsError):
-            users.add_user(SETTINGS, "alice", "other")
+            users.add_user(SETTINGS, "alice", "other-strong-password")
+
+    def test_other_database_errors_are_not_mistaken_for_duplicates(self):
+        def failing(conn, sql, params=None):
+            raise db.DatabaseError("lock wait timeout exceeded", code=1205)
+
+        with mock.patch.object(db, "execute", failing), self.assertRaises(db.DatabaseError):
+            users.add_user(SETTINGS, "carol", STRONG)
+        self.assertNotIn("carol", self.store)
+
+    def test_short_password_is_rejected(self):
+        with self.assertRaises(ValueError):
+            users.add_user(SETTINGS, "alice", "short")
+        self.assertNotIn("alice", self.store)
+
+    def test_password_equal_to_the_user_name_is_rejected(self):
+        with self.assertRaises(ValueError):
+            users.add_user(SETTINGS, "alicealicealice", "alicealicealice")
+
+    def test_repeated_character_password_is_rejected(self):
+        with self.assertRaises(ValueError):
+            users.add_user(SETTINGS, "alice", "a" * 16)
+
+    def test_set_password_enforces_the_policy(self):
+        users.add_user(SETTINGS, "alice", STRONG)
+        with self.assertRaises(ValueError):
+            users.set_password(SETTINGS, "alice", "short")
+        self.assertTrue(users.authenticate(SETTINGS, "alice", STRONG))
 
     def test_set_password_missing_user(self):
         with self.assertRaises(users.UserNotFoundError):
-            users.set_password(SETTINGS, "ghost", "s3cret")
+            users.set_password(SETTINGS, "ghost", STRONG)
 
     def test_set_password(self):
-        users.add_user(SETTINGS, "alice", "old")
-        users.set_password(SETTINGS, "alice", "new")
-        self.assertFalse(users.authenticate(SETTINGS, "alice", "old"))
-        self.assertTrue(users.authenticate(SETTINGS, "alice", "new"))
+        users.add_user(SETTINGS, "alice", "old-password-123")
+        users.set_password(SETTINGS, "alice", "new-password-456")
+        self.assertFalse(users.authenticate(SETTINGS, "alice", "old-password-123"))
+        self.assertTrue(users.authenticate(SETTINGS, "alice", "new-password-456"))
 
     def test_count_list_delete(self):
-        users.add_user(SETTINGS, "bob", "x")
-        users.add_user(SETTINGS, "alice", "y")
+        users.add_user(SETTINGS, "bob", "password-for-bob")
+        users.add_user(SETTINGS, "alice", "password-for-alice")
         self.assertEqual(users.count_users(SETTINGS), 2)
         self.assertEqual(users.list_users(SETTINGS), ["alice", "bob"])
         self.assertTrue(users.delete_user(SETTINGS, "alice"))

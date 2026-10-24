@@ -79,6 +79,10 @@ sudo mkdir -p /home/ubuntu/webdav-backup-$STAMP
 mysqldump --single-transaction webdav dav_users | gzip \
   | sudo tee /home/ubuntu/webdav-backup-$STAMP/dav_users.sql.gz >/dev/null
 sudo chmod 600 /home/ubuntu/webdav-backup-$STAMP/dav_users.sql.gz
+# 如果当前已经在 v2.03+（有 DAV 状态表），把这两张也带上：
+#   mysqldump --single-transaction webdav \
+#       dav_users dav_properties dav_locks | gzip | sudo tee .../webdav-db.sql.gz >/dev/null
+# 或者直接 tools/backup.sh（v2.4 起会自动判断表是否存在）
 
 # 2.2 旧部署目录（代码 + 数据；数据大时先看 §1 第 3 步）
 sudo cp -a /home/ubuntu/WebDAV_Server /home/ubuntu/webdav-backup-$STAMP/WebDAV_Server
@@ -328,6 +332,8 @@ systemctl status webdav.service --no-pager
 
 # 2) 若数据库被改坏（例如误删账号），从备份恢复
 gunzip -c /home/ubuntu/webdav-backup-<STAMP>/dav_users.sql.gz | mysql webdav
+# 若备份是用 tools/backup.sh（v2.4+）或手工 dump 的三张表，这一条命令会同时
+# 恢复 dav_users / dav_properties / dav_locks
 
 # 3) 若旧数据目录被动过（用了 --move 而非 --copy），从备份整体还原
 sudo rm -rf /home/ubuntu/WebDAV_Server
@@ -609,7 +615,10 @@ PROPPATCH/LOCK/UNLOCK/COPY/MOVE/DELETE）、死属性、锁语义均符合预期
 
 ```bash
 # —— 备份 ——
-mysqldump --single-transaction webdav dav_users | gzip > dav_users.sql.gz
+# v2.4 起脚本会把 dav_users / dav_properties / dav_locks 一起 dump（存在才 dump）
+tools/backup.sh --dest /var/backups/webdav --keep 14
+# 手工等价写法（三张表都在时才可用）：
+mysqldump --single-transaction webdav dav_users dav_properties dav_locks | gzip > webdav-db.sql.gz
 sudo cp -a /home/ubuntu/WebDAV_Server /home/ubuntu/webdav-backup-<STAMP>/
 
 # —— 部署 ——

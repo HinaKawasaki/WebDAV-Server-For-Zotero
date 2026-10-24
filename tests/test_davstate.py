@@ -22,9 +22,25 @@ class FakePropertyStore:
 
     def __init__(self):
         self.rows = {}
+        self.batch_calls = []
+        self.get_calls = 0
 
     def get(self, ref_url):
+        self.get_calls += 1
         return dict(self.rows.get(ref_url, {}))
+
+    def get_under(self, prefix, depth="infinity"):
+        self.batch_calls.append((prefix, depth))
+        result = {}
+        for url, props in self.rows.items():
+            if not url.startswith(prefix):
+                continue
+            if depth == "1":
+                rest = url[len(prefix):]
+                if rest and "/" in rest.rstrip("/"):
+                    continue
+            result[url] = dict(props)
+        return result
 
     def urls(self):
         return sorted(self.rows)
@@ -44,13 +60,24 @@ class FakeLockStore:
 
     def __init__(self):
         self.data = {}
+        self.applied = []
+        self.saves = 0
 
     def load(self):
         # mirrors MariaDBLockStore: one JSON round trip, bytes wrapped
         return davstate._decode_value(json.loads(json.dumps(self.data)))
 
     def save(self, locks):
+        self.saves += 1
         self.data = json.loads(json.dumps(davstate._encode_value(locks)))
+
+    def apply(self, upserts, deletes):
+        self.applied.append((dict(upserts), list(deletes)))
+        encoded = json.loads(json.dumps(davstate._encode_value(upserts)))
+        for key in deletes:
+            self.data.pop(key, None)
+        for key, value in encoded.items():
+            self.data[key] = value
 
     def clear(self):
         self.data = {}
@@ -208,6 +235,51 @@ class LockStorageTests(unittest.TestCase):
         self.storage.clear()
         self.assertEqual(self.store.data, {})
 
+    def test_create_writes_only_the_new_rows(self):
+        token = self._acquire()
+        self.assertEqual(len(self.store.applied), 1)
+        upserts, deletes = self.store.applied[-1]
+        self.assertEqual(deletes, [])
+        self.assertEqual(set(upserts), {token, "URL2TOKEN:/hello/a.txt"})
+
+    def test_delete_removes_only_the_touched_rows(self):
+        token = self._acquire()
+        other = self._acquire("/hello/b.txt")
+        self.store.applied.clear()
+        self.storage.delete(token)
+        upserts, deletes = self.store.applied[-1]
+        self.assertEqual(upserts, {})
+        self.assertCountEqual(deletes, [token, "URL2TOKEN:/hello/a.txt"])
+        self.assertEqual(set(self.store.data), {other, "URL2TOKEN:/hello/b.txt"})
+
+    def test_noop_flush_does_not_touch_the_store(self):
+        self._acquire()
+        self.store.applied.clear()
+        self.storage._flush()
+        self.assertEqual(self.store.applied, [])
+
+    def test_cleanup_persists_dangling_reference_removal(self):
+        token = self._acquire()
+        self.store.data["URL2TOKEN:/hello/stale.txt"] = ["opaquelocktoken:missing"]
+        revived = davstate.MariaDBLockStorage(self.store)
+        revived.open()
+        try:
+            self.assertNotIn("URL2TOKEN:/hello/stale.txt", self.store.data)
+            self.assertIn(token, self.store.data)
+        finally:
+            revived.close()
+
+    def test_expired_lock_is_deleted_without_rewriting_the_table(self):
+        token = self._acquire()
+        other = self._acquire("/hello/b.txt")
+        self.storage._dict[token]["expire"] = time.time() - 60
+        self.store.applied.clear()
+        self.storage.cleanup()
+        upserts, deletes = self.store.applied[-1]
+        self.assertEqual(upserts, {})
+        self.assertCountEqual(deletes, [token, "URL2TOKEN:/hello/a.txt"])
+        self.assertEqual(set(self.store.data), {other, "URL2TOKEN:/hello/b.txt"})
+
     def test_lock_list(self):
         token = self._acquire()
         tokens = self.storage.get_lock_list(
@@ -295,6 +367,25 @@ class SqlLayerTests(unittest.TestCase):
         self.assertEqual(davstate._decode_value(stored)["owner"], b"<o/>")
         self.assertEqual(self.conn.commits, 1)
 
+    def test_lock_apply_only_touches_changed_rows(self):
+        store = davstate.MariaDBLockStore({}, "dav_locks")
+        store.apply(
+            {"opaquelocktoken:x": {"root": "/hello/a.txt"}}, ["opaquelocktoken:y"]
+        )
+        self.assertEqual([entry[0] for entry in self.executed], ["execute", "execute"])
+        self.assertIn(
+            "DELETE FROM `dav_locks` WHERE `lock_key` = %s", self.executed[0][1]
+        )
+        self.assertEqual(self.executed[0][2], ("opaquelocktoken:y",))
+        self.assertIn("ON DUPLICATE KEY UPDATE", self.executed[1][1])
+        self.assertEqual(self.executed[1][2][0], "opaquelocktoken:x")
+        self.assertEqual(self.conn.commits, 1)
+        self.assertEqual(self.conn.rollbacks, 0)
+
+    def test_lock_apply_without_changes_is_a_noop(self):
+        davstate.MariaDBLockStore({}, "dav_locks").apply({}, [])
+        self.assertEqual(self.executed, [])
+
     def test_lock_load_skips_unreadable_rows(self):
         self.patches[2].stop()
         rows = [{"lock_key": "good", "lock_value": '{"root": "/x"}'},
@@ -302,6 +393,116 @@ class SqlLayerTests(unittest.TestCase):
         with mock.patch.object(davstate.db, "fetch_all", lambda *a, **k: rows):
             loaded = davstate.MariaDBLockStore({}, "dav_locks").load()
         self.assertEqual(loaded, {"good": {"root": "/x"}})
+
+    def test_get_under_depth_1_is_one_prefix_query(self):
+        self.patches[2].stop()
+        rows = [
+            {"ref_url": "/alice/", "prop_name": "{DAV:}tag", "prop_value": "root"},
+            {"ref_url": "/alice/a.txt", "prop_name": "{DAV:}tag", "prop_value": "a"},
+            {"ref_url": "/alice/sub/", "prop_name": "{DAV:}tag", "prop_value": "sub"},
+        ]
+        calls = []
+
+        def fake_fetch_all(conn, sql, params=None):
+            calls.append((" ".join(sql.split()), params))
+            return rows
+
+        with mock.patch.object(davstate.db, "fetch_all", fake_fetch_all):
+            store = davstate.MariaDBPropertyStore({}, "dav_properties")
+            grouped = store.get_under("/alice/", depth="1")
+
+        self.assertEqual(
+            grouped,
+            {
+                "/alice/": {"{DAV:}tag": "root"},
+                "/alice/a.txt": {"{DAV:}tag": "a"},
+                "/alice/sub/": {"{DAV:}tag": "sub"},
+            },
+        )
+        self.assertEqual(len(calls), 1)
+        sql, params = calls[0]
+        self.assertIn("`ref_url` LIKE %s ESCAPE '!'", sql)
+        self.assertIn("LOCATE('/', SUBSTRING(`ref_url`, %s))", sql)
+        self.assertEqual(params, ["/alice/%", 8, 8, 8])
+
+    def test_get_under_infinity_has_no_depth_filter(self):
+        self.patches[2].stop()
+        calls = []
+
+        def fake_fetch_all(conn, sql, params=None):
+            calls.append((" ".join(sql.split()), params))
+            return []
+
+        with mock.patch.object(davstate.db, "fetch_all", fake_fetch_all):
+            davstate.MariaDBPropertyStore({}, "dav_properties").get_under("/alice/")
+
+        self.assertEqual(calls[0][1], ["/alice/%"])
+        self.assertNotIn("LOCATE", calls[0][0])
+
+    def test_like_prefix_escapes_wildcards(self):
+        self.assertEqual(davstate._like_prefix("/a%b_c!d/"), "/a!%b!_c!!d/")
+
+
+class RequestCacheTests(unittest.TestCase):
+    """A PROPFIND over a collection must read the property table once."""
+
+    def setUp(self):
+        self.store = FakePropertyStore()
+        self.store.rows = {
+            "/alice/": {"{DAV:}root": "r"},
+            "/alice/a.txt": {"{DAV:}tag": "a"},
+            "/alice/sub/": {"{DAV:}tag": "s"},
+            "/alice/sub/b.txt": {"{DAV:}tag": "b"},
+        }
+        self.manager = davstate.MariaDBPropertyManager(self.store)
+
+    def test_depth_1_batches_the_collection_and_its_children(self):
+        environ = {"REQUEST_METHOD": "PROPFIND", "HTTP_DEPTH": "1"}
+        self.assertEqual(
+            self.manager.get_properties("/alice/", environ), ["{DAV:}root"]
+        )
+        self.assertEqual(
+            self.manager.get_properties("/alice/a.txt", environ), ["{DAV:}tag"]
+        )
+        self.assertEqual(
+            self.manager.get_property("/alice/a.txt", "{DAV:}tag", environ), "a"
+        )
+        self.assertEqual(
+            self.manager.get_property("/alice/sub/", "{DAV:}tag", environ), "s"
+        )
+        self.assertEqual(self.store.batch_calls, [("/alice/", "1")])
+        self.assertEqual(self.store.get_calls, 0)
+
+    def test_grandchild_falls_back_to_a_single_query(self):
+        environ = {"REQUEST_METHOD": "PROPFIND", "HTTP_DEPTH": "1"}
+        self.manager.get_properties("/alice/", environ)
+        self.manager.get_properties("/alice/sub/b.txt", environ)
+        # PropertyManager itself touches the mapping twice per lookup
+        self.assertGreaterEqual(self.store.get_calls, 1)
+
+    def test_infinity_covers_the_whole_subtree(self):
+        environ = {"REQUEST_METHOD": "PROPFIND", "HTTP_DEPTH": "infinity"}
+        self.manager.get_properties("/alice/", environ)
+        self.assertEqual(
+            self.manager.get_properties("/alice/sub/b.txt", environ), ["{DAV:}tag"]
+        )
+        self.assertEqual(self.store.get_calls, 0)
+
+    def test_no_batch_for_depth_0_or_other_methods(self):
+        for environ in (
+            {"REQUEST_METHOD": "PROPFIND", "HTTP_DEPTH": "0"},
+            {"REQUEST_METHOD": "GET"},
+        ):
+            self.manager.get_properties("/alice/", environ)
+        self.assertEqual(self.store.batch_calls, [])
+        self.assertGreaterEqual(self.store.get_calls, 2)
+
+    def test_missing_property_is_authoritative_from_the_batch(self):
+        self.store.rows.pop("/alice/a.txt")
+        environ = {"REQUEST_METHOD": "PROPFIND", "HTTP_DEPTH": "1"}
+        self.manager.get_properties("/alice/", environ)
+        self.assertEqual(self.manager.get_properties("/alice/a.txt", environ), [])
+        self.assertEqual(self.store.get_calls, 0)
 
 
 class EnsureSchemaTests(unittest.TestCase):
@@ -351,12 +552,27 @@ class EnsureSchemaTests(unittest.TestCase):
         self.assertFalse(result["locks_ready"])
         self.assertEqual(len(result["warnings"]), 2)
 
-    def test_unexpected_error_is_raised(self):
+    def test_unexpected_error_degrades_when_the_table_is_missing(self):
+        # e.g. an old row format rejecting the lock key: optional feature, so
+        # the service must still start (in-memory fallback + warning)
+        def boom(conn, sql, params=None):
+            raise davstate.DatabaseError("Specified key was too long", code=1071)
+
+        result, _ = self._run(boom, table_exists=False)
+        self.assertFalse(result["properties_ready"])
+        self.assertFalse(result["locks_ready"])
+        self.assertEqual(len(result["warnings"]), 2)
+
+    def test_unexpected_error_keeps_working_with_an_existing_table(self):
         def boom(conn, sql, params=None):
             raise davstate.DatabaseError("syntax error", code=1064)
 
-        with self.assertRaises(davstate.DatabaseError):
-            self._run(boom)
+        result, _ = self._run(boom, table_exists=True)
+        self.assertTrue(result["properties_ready"])
+        self.assertTrue(result["locks_ready"])
+        # worth a warning: our CREATE did not run, so the table's shape is
+        # unverified - but it must not stop the service
+        self.assertEqual(len(result["warnings"]), 2)
 
 
 PROPPATCH_BODY = (
@@ -430,6 +646,35 @@ class EndToEndPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(result["code"], 207)
         self.assertIn(b"kept", result["body"])
+
+    def test_propfind_depth_1_reads_the_property_table_once(self):
+        app = self._app()
+        creds = ("alice", "pw")
+        for name in ("a", "b", "c"):
+            result = wsgi_request(
+                app, make_environ("PUT", f"/alice/{name}.txt", credentials=creds, body=b"x")
+            )
+            self.assertEqual(result["code"], 201)
+            result = wsgi_request(
+                app,
+                make_environ(
+                    "PROPPATCH", f"/alice/{name}.txt", credentials=creds,
+                    body=PROPPATCH_BODY,
+                ),
+            )
+            self.assertEqual(result["code"], 207)
+
+        environ = make_environ("PROPFIND", "/alice/", credentials=creds, body=PROPFIND_BODY)
+        environ["HTTP_DEPTH"] = "1"
+        # PROPPATCH above also touches the store; measure only the PROPFIND
+        self.property_store.get_calls = 0
+        self.property_store.batch_calls.clear()
+        result = wsgi_request(app, environ)
+        self.assertEqual(result["code"], 207)
+        self.assertEqual(result["body"].count(b"kept"), 3)
+        # the whole PROPFIND was served from one batch query
+        self.assertEqual(self.property_store.batch_calls, [("/alice/", "1")])
+        self.assertEqual(self.property_store.get_calls, 0)
 
     def test_property_disappears_when_the_resource_is_deleted(self):
         app = self._app()

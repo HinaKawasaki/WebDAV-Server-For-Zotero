@@ -18,7 +18,12 @@ import logging
 import os
 
 from wsgidav import util
-from wsgidav.dav_error import DAVError, HTTP_FORBIDDEN, HTTP_INTERNAL_ERROR
+from wsgidav.dav_error import (
+    DAVError,
+    HTTP_BAD_REQUEST,
+    HTTP_FORBIDDEN,
+    HTTP_INTERNAL_ERROR,
+)
 from wsgidav.fs_dav_provider import FilesystemProvider
 
 from server import storage
@@ -82,6 +87,11 @@ class PerUserFilesystemProvider(FilesystemProvider):
         """Map a DAV path to a file path inside the caller's own directory."""
         username = self._request_username(environ)
         folder = storage.directory_name(username)
+
+        if "\x00" in (path or ""):
+            # os.path would raise ValueError, which used to surface as a 500
+            # with the exception text echoed back to the client.
+            raise DAVError(HTTP_BAD_REQUEST, "Invalid path.")
 
         parts = [part for part in (path or "").split("/") if part not in ("", ".")]
         if any(part == ".." for part in parts):

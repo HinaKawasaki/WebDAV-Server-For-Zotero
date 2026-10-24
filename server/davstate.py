@@ -12,9 +12,10 @@ This module keeps WsgiDAV's policy code and swaps only the storage:
 * :class:`MariaDBPropertyManager` subclasses ``PropertyManager`` and hands it a
   mapping that reads and writes the property table.  All of the copy/move/
   remove logic therefore stays upstream.
-* :class:`MariaDBLockStorage` subclasses ``LockStorageDict`` and rewrites the
-  lock table on every mutation, exactly like the stock ``LockStorageShelve``
-  does with a shelve file.  Expired locks are pruned when the storage opens.
+* :class:`MariaDBLockStorage` subclasses ``LockStorageDict`` and persists only
+  the rows that changed since the last flush (the in-memory dictionary stays
+  authoritative, like the stock ``LockStorageShelve``).  Expired locks are
+  pruned when the storage opens.
 
 Both stores are injected, so the SQL can be replaced by an in-memory fake in
 tests (see ``tests/test_davstate.py``).
@@ -166,25 +167,70 @@ def ensure_schema(settings, properties_table="dav_properties", locks_table="dav_
             with db.connect(settings) as conn:
                 db.execute(conn, ddl.format(table=table))
             result[key] = True
+            continue
         except DatabaseError as exc:
-            if exc.code not in _PERMISSION_ERROR_CODES:
-                raise
-            if _table_exists(settings, table):
-                logger.info("using the existing %s table %r", label, table)
-                result[key] = True
-            else:
+            # Persisting DAV state is optional: a DDL problem must never stop
+            # the service from starting.  This also covers dialects/row
+            # formats where the CREATE itself is not supported (for example an
+            # old COMPACT row format rejecting the 512-character lock key).
+            error = exc
+
+        try:
+            exists = _table_exists(settings, table)
+        except DatabaseError:
+            exists = False
+
+        if exists:
+            logger.info("using the existing %s table %r", label, table)
+            if error.code not in _PERMISSION_ERROR_CODES:
                 logger.warning(
-                    "the %s table %r does not exist and this account may not create it; "
-                    "%s stay in memory and are lost on restart",
+                    "could not create the %s table %r (%s); using the existing table",
                     label,
                     table,
-                    label,
+                    error,
                 )
                 result["warnings"].append(
-                    f"{label} table {table!r} is missing - {label} stay in memory; "
-                    f"ask a DBA to create it to make them persistent"
+                    f"{label} table {table!r} could not be created ({error}); "
+                    f"the existing table is used instead - verify its schema"
                 )
+            result[key] = True
+        else:
+            logger.warning(
+                "the %s table %r is not usable (%s); %s stay in memory and are "
+                "lost on restart",
+                label,
+                table,
+                error,
+                label,
+            )
+            result["warnings"].append(
+                f"{label} table {table!r} could not be created ({error}) - "
+                f"{label} stay in memory; ask a DBA to create it to make them "
+                f"persistent"
+            )
     return result
+
+
+#: Escape character for prefix queries.  ``!`` can appear in a URL, so it is
+#: escaped as well; avoiding backslash keeps the SQL dialect-independent.
+_LIKE_ESCAPE = "!"
+
+
+def _like_prefix(value: str) -> str:
+    """Escape ``value`` so it is matched literally by ``LIKE ... ESCAPE '!'``."""
+    return (
+        value.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+
+
+def _group_rows(rows) -> dict:
+    """Turn ``(ref_url, prop_name, prop_value)`` rows into ``{url: {name: value}}``."""
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["ref_url"], {})[row["prop_name"]] = row["prop_value"]
+    return grouped
 
 
 # --------------------------------------------------------------------------- #
@@ -208,6 +254,34 @@ class MariaDBPropertyStore:
                 (_digest(ref_url),),
             )
         return {row["prop_name"]: row["prop_value"] for row in rows}
+
+    def get_under(self, prefix: str, depth: str = "infinity") -> dict:
+        """Read the dead properties of a collection and its children at once.
+
+        ``depth == "1"`` keeps the collection itself and its direct children
+        (including child collections such as ``/alice/dir/sub/``);
+        ``"infinity"`` returns the whole subtree.  One query, so a PROPFIND over
+        a collection no longer costs a database round trip per resource.
+        """
+        pattern = _like_prefix(prefix) + "%"
+        sql = (
+            f"SELECT `ref_url`, `prop_name`, `prop_value` FROM `{self.table}` "
+            "WHERE `ref_url` LIKE %s ESCAPE '!'"
+        )
+        params = [pattern]
+        if depth != "infinity":
+            # A direct child's remainder has no slash, except for the trailing
+            # slash of a child collection.
+            start = len(prefix) + 1
+            sql += (
+                " AND (LOCATE('/', SUBSTRING(`ref_url`, %s)) = 0"
+                " OR LOCATE('/', SUBSTRING(`ref_url`, %s))"
+                " = CHAR_LENGTH(SUBSTRING(`ref_url`, %s)))"
+            )
+            params += [start, start, start]
+        with db.connect(self.settings) as conn:
+            rows = db.fetch_all(conn, sql, params)
+        return _group_rows(rows)
 
     def urls(self) -> list:
         with db.connect(self.settings) as conn:
@@ -281,8 +355,42 @@ class _UrlMapping(MutableMapping):
         return self._store.count()
 
 
+#: ``environ`` key holding the per-request dead-property cache.
+_REQUEST_CACHE_KEY = "server.davstate.request_properties"
+
+
+class _RequestCache:
+    """Dead properties fetched in one query for a PROPFIND request."""
+
+    __slots__ = ("depth", "prefix", "rows")
+
+    def __init__(self, prefix: str, depth: str, rows: dict):
+        self.prefix = prefix
+        self.depth = depth
+        self.rows = rows
+
+    def covers(self, ref_url: str) -> bool:
+        if not ref_url.startswith(self.prefix):
+            return False
+        if self.depth == "infinity":
+            return True
+        rest = ref_url[len(self.prefix) :]
+        if not rest:
+            return True
+        # a direct child has no further slash, except the trailing one of a
+        # child collection
+        return "/" not in rest.rstrip("/")
+
+
 class MariaDBPropertyManager(PropertyManager):
-    """``PropertyManager`` whose dictionary lives in MariaDB."""
+    """``PropertyManager`` whose dictionary lives in MariaDB.
+
+    Read access during a PROPFIND is served from a per-request cache that is
+    filled by a single prefix query (see
+    :meth:`MariaDBPropertyStore.get_under`), instead of one query per resource.
+    All mutations still go through the plain ``PropertyManager`` code and the
+    row-per-URL store, so copy/move/remove semantics are unchanged.
+    """
 
     def __init__(self, store):
         super().__init__()
@@ -302,6 +410,45 @@ class MariaDBPropertyManager(PropertyManager):
     def _sync(self):
         # Every mutation is already durable; nothing to flush.
         pass
+
+    def _request_cache(self, norm_url, environ):
+        """Return this request's batch (loading it on first use), or None."""
+        if not isinstance(environ, dict):
+            return None
+        if environ.get("REQUEST_METHOD") != "PROPFIND":
+            return None
+        cache = environ.get(_REQUEST_CACHE_KEY)
+        if cache is not None:
+            return cache
+        depth = environ.get("HTTP_DEPTH", "infinity")
+        if depth not in ("1", "infinity"):
+            # Depth: 0 is a single resource; a per-resource query is enough.
+            return None
+        if not isinstance(norm_url, str) or not norm_url.endswith("/"):
+            return None
+        # WsgiDAV yields the requested collection first (add_self=True), so the
+        # prefix is the collection being PROPFINDed.
+        cache = _RequestCache(norm_url, depth, self._store.get_under(norm_url, depth))
+        environ[_REQUEST_CACHE_KEY] = cache
+        return cache
+
+    def _cached(self, norm_url, environ):
+        cache = self._request_cache(norm_url, environ)
+        if cache is None or not cache.covers(norm_url):
+            return None
+        return cache.rows.get(norm_url, {})
+
+    def get_properties(self, norm_url, environ=None):
+        cached = self._cached(norm_url, environ)
+        if cached is not None:
+            return list(cached)
+        return super().get_properties(norm_url, environ)
+
+    def get_property(self, norm_url, name, environ=None):
+        cached = self._cached(norm_url, environ)
+        if cached is not None:
+            return cached.get(name)
+        return super().get_property(norm_url, name, environ)
 
 
 # --------------------------------------------------------------------------- #
@@ -331,6 +478,7 @@ class MariaDBLockStore:
         return locks
 
     def save(self, locks: dict) -> None:
+        """Replace the whole table (repair/tests; normal writes use :meth:`apply`)."""
         with db.connect(self.settings) as conn:
             conn.begin()
             try:
@@ -340,6 +488,38 @@ class MariaDBLockStore:
                         conn,
                         f"INSERT INTO `{self.table}` (`lock_key`, `lock_value`) VALUES (%s, %s)",
                         (key, json.dumps(_encode_value(value))),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def apply(self, upserts: dict, deletes) -> None:
+        """Persist only the rows that changed, in one transaction.
+
+        ``upserts`` maps lock key -> value; ``deletes`` is a list of keys.  A
+        LOCK normally touches two rows (the token and its ``URL2TOKEN:``
+        reference), so the cost no longer grows with the number of locks in the
+        table - the shelve-style "rewrite everything" flush did.
+        """
+        if not upserts and not deletes:
+            return
+        with db.connect(self.settings) as conn:
+            conn.begin()
+            try:
+                for key in deletes:
+                    db.execute(
+                        conn,
+                        f"DELETE FROM `{self.table}` WHERE `lock_key` = %s",
+                        (key,),
+                    )
+                for key, value in upserts.items():
+                    payload = json.dumps(_encode_value(value))
+                    db.execute(
+                        conn,
+                        f"INSERT INTO `{self.table}` (`lock_key`, `lock_value`) "
+                        "VALUES (%s, %s) ON DUPLICATE KEY UPDATE `lock_value` = %s",
+                        (key, payload, payload),
                     )
                 conn.commit()
             except Exception:
@@ -359,32 +539,56 @@ class MariaDBLockStore:
 class MariaDBLockStorage(LockStorageDict):
     """``LockStorageDict`` that keeps its dictionary in MariaDB.
 
-    WsgiDAV re-assigns dictionary members and calls :meth:`_flush` after every
-    mutation, so writing the whole (small) dictionary back is enough - that is
-    exactly what the stock shelve implementation does.
+    WsgiDAV mutates the dictionary in place and calls :meth:`_flush` after every
+    mutation.  Instead of writing the whole (small) dictionary back - what the
+    stock shelve implementation does with its file - the flush compares the
+    dictionary against the last persisted snapshot and only upserts/deletes the
+    rows that changed.  A LOCK normally touches two rows, not every row in the
+    table, and the cost no longer grows with the number of active locks.
     """
 
     def __init__(self, store, time_source=time.time):
         super().__init__()
         self._store = store
         self._now = time_source
+        #: JSON payload of every row as it is currently stored in the database
+        self._persisted = {}
 
     def __repr__(self):
         return f"MariaDBLockStorage({self._store!r})"
 
+    @staticmethod
+    def _payload(value) -> str:
+        return json.dumps(_encode_value(value))
+
+    def _snapshot(self) -> dict:
+        return {key: self._payload(value) for key, value in self._dict.items()}
+
     def open(self):
         super().open()  # asserts the storage is closed and sets self._dict = {}
         self._dict = self._store.load()
+        self._persisted = self._snapshot()
         self.cleanup()
 
     def _flush(self):
         if self._dict is None:
             return
-        self._store.save(dict(self._dict))
+        current = self._snapshot()
+        upserts = {
+            key: self._dict[key]
+            for key, payload in current.items()
+            if self._persisted.get(key) != payload
+        }
+        deletes = [key for key in self._persisted if key not in current]
+        if not upserts and not deletes:
+            return
+        self._store.apply(upserts, deletes)
+        self._persisted = current
 
     def clear(self):
         super().clear()
         self._store.clear()
+        self._persisted = {}
 
     def cleanup(self):
         """Drop expired locks (and the URL references pointing at them)."""
@@ -405,6 +609,7 @@ class MariaDBLockStorage(LockStorageDict):
                     del self._dict[key]
         if removed:
             logger.info("purged %d expired lock(s)", removed)
+        if self._snapshot() != self._persisted:
             self._flush()
 
 

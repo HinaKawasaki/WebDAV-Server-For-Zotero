@@ -76,15 +76,46 @@ class AuthCacheTests(unittest.TestCase):
 
 
 class GenerationFileTests(unittest.TestCase):
-    def test_touching_the_file_invalidates_entries(self):
+    def test_a_new_generation_invalidates_entries(self):
         with tempfile.TemporaryDirectory() as tmp:
             epoch = Path(tmp) / "generation"
-            epoch.touch()
+            self.assertTrue(invalidate(epoch))
             cache = AuthCache(ttl_seconds=60, epoch_file=epoch)
             cache.store("alice", "pw")
             self.assertTrue(cache.check("alice", "pw"))
 
+            self.assertTrue(invalidate(epoch))
+            self.assertFalse(cache.check("alice", "pw"))
+
+    def test_mtime_changes_alone_do_not_invalidate(self):
+        # The token is the source of truth, not the timestamp: a coarse or
+        # preserved mtime must not hide (or fake) a password change.
+        with tempfile.TemporaryDirectory() as tmp:
+            epoch = Path(tmp) / "generation"
+            self.assertTrue(invalidate(epoch))
+            cache = AuthCache(ttl_seconds=60, epoch_file=epoch)
+            cache.store("alice", "pw")
+
             os.utime(epoch, (1, 1))
+            self.assertTrue(cache.check("alice", "pw"))
+
+    def test_each_generation_is_a_fresh_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            epoch = Path(tmp) / "generation"
+            invalidate(epoch)
+            first = epoch.read_text()
+            invalidate(epoch)
+            second = epoch.read_text()
+            self.assertTrue(first.strip())
+            self.assertNotEqual(first, second)
+
+    def test_content_change_to_empty_invalidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            epoch = Path(tmp) / "generation"
+            epoch.write_text("token-a\n")
+            cache = AuthCache(ttl_seconds=60, epoch_file=epoch)
+            cache.store("alice", "pw")
+            epoch.write_text("")  # e.g. the old `touch`-based file
             self.assertFalse(cache.check("alice", "pw"))
 
     def test_invalidate_creates_missing_file_and_dirs(self):
@@ -92,6 +123,7 @@ class GenerationFileTests(unittest.TestCase):
             epoch = Path(tmp) / "nested" / "generation"
             self.assertTrue(invalidate(epoch))
             self.assertTrue(epoch.exists())
+            self.assertTrue(epoch.read_text().strip())
 
     def test_missing_generation_file_is_harmless(self):
         with tempfile.TemporaryDirectory() as tmp:

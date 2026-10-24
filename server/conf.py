@@ -137,6 +137,9 @@ LOGIN_MAX_ATTEMPTS = _env_int("WEBDAV_LOGIN_MAX_ATTEMPTS", 10)
 LOGIN_WINDOW_SECONDS = _env_int("WEBDAV_LOGIN_WINDOW_SECONDS", 300)
 LOGIN_BASE_PENALTY = _env_int("WEBDAV_LOGIN_BASE_PENALTY", 2)
 LOGIN_MAX_PENALTY = _env_int("WEBDAV_LOGIN_MAX_PENALTY", 300)
+#: Upper bound on the number of (user, source address) pairs the throttle
+#: remembers, so a flood of random user names cannot grow the process.
+LOGIN_MAX_KEYS = _env_int("WEBDAV_LOGIN_MAX_KEYS", 4096)
 
 #: A successful authentication is remembered for this long so that a burst of
 #: requests from one client does not repeat the database round trip and the
@@ -209,6 +212,7 @@ def build_config() -> dict:
             "login_window_seconds": LOGIN_WINDOW_SECONDS,
             "login_base_penalty": LOGIN_BASE_PENALTY,
             "login_max_penalty": LOGIN_MAX_PENALTY,
+            "login_max_keys": LOGIN_MAX_KEYS,
         },
         "webdav_auth_cache": {
             "ttl_seconds": AUTH_CACHE_SECONDS,
@@ -242,6 +246,7 @@ def redacted() -> dict:
             "throttle_attempts": LOGIN_MAX_ATTEMPTS,
             "throttle_base_penalty": LOGIN_BASE_PENALTY,
             "throttle_max_penalty": LOGIN_MAX_PENALTY,
+            "throttle_max_keys": LOGIN_MAX_KEYS,
         },
         "dav_state": {
             "persist_properties": PERSIST_PROPERTIES,

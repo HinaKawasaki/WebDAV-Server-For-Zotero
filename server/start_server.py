@@ -24,10 +24,13 @@ if __package__ in (None, ""):
 
 from cheroot import wsgi
 
-from server import __version__, conf, davstate, db, users
+from server import __version__, conf, davstate, db, instance, users
 from server.app import create_dav_app
 
 logger = logging.getLogger("server.start_server")
+
+#: Held for the lifetime of the process; the kernel releases it on exit.
+_instance_lock = None
 
 
 def setup_logging() -> None:
@@ -50,8 +53,13 @@ def setup_logging() -> None:
 
 def prepare() -> None:
     """Validate the configuration and make sure database and storage exist."""
+    global _instance_lock
     conf.validate()
     conf.SHARE_DIR.mkdir(parents=True, exist_ok=True)
+    if _instance_lock is None:
+        # Refuse to run a second server against the same storage directory:
+        # the lock table and the auth-cache generation file are shared state.
+        _instance_lock = instance.acquire(conf.SHARE_DIR / ".server.lock")
     settings = conf.db_settings()
     db.ping(settings)
     users.ensure_schema(settings)
@@ -72,7 +80,12 @@ def main(argv=None) -> int:
 
     try:
         prepare()
-    except (conf.ConfigurationError, db.DatabaseError) as exc:
+    except (
+        conf.ConfigurationError,
+        db.DatabaseError,
+        instance.AlreadyRunningError,
+        OSError,
+    ) as exc:
         logger.error("startup failed: %s", exc)
         return 1
 

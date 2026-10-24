@@ -7,7 +7,7 @@ historical ``VARCHAR(64)`` password column::
     scrypt$<n>$<r>$<p>$<salt_b64>$<hash_b64>
 
 with base64url (unpadded) salt/hash.  For the default work factors the value is
-63 characters long - see :func:`hash_password` and :data:`MAX_HASH_LENGTH`.
+56 characters long - see :func:`hash_password` and :data:`MAX_HASH_LENGTH`.
 
 The verifier also understands the formats that previous revisions of this
 project wrote, so existing databases keep working and are upgraded to scrypt
@@ -32,16 +32,23 @@ import string
 
 __all__ = [
     "MAX_HASH_LENGTH",
+    "MIN_PASSWORD_LENGTH",
     "SCRYPT_PREFIX",
     "generate_password",
     "hash_length",
     "hash_password",
     "looks_hashed",
+    "validate_password",
     "verify_password",
 ]
 
 SCRYPT_PREFIX = "scrypt"
 _SHA256_PREFIX = "sha256"
+
+#: Minimum length for a new or changed password.  Existing stored passwords are
+#: not affected - the policy is checked by ``users.add_user`` / ``set_password``
+#: (i.e. ``manage adduser`` / ``passwd``), not by the verifier.
+MIN_PASSWORD_LENGTH = 12
 
 # scrypt work factors (memory cost 128 * n * r == 16 MiB for the defaults)
 _SCRYPT_N = 1 << 14
@@ -83,6 +90,27 @@ def generate_password(length: int = 20) -> str:
     if length < 8:
         raise ValueError("password length must be at least 8")
     return "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def validate_password(password: str, *, username=None) -> None:
+    """Raise ``ValueError`` if ``password`` is too weak for a new account.
+
+    Applied by :func:`server.users.add_user` and
+    :func:`server.users.set_password` (and therefore by ``manage adduser`` /
+    ``manage passwd``).  The automatic legacy-hash upgrade bypasses it, so old
+    short passwords keep working until they are changed.
+    """
+    if not isinstance(password, str) or not password:
+        raise ValueError("password must be a non-empty string")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(
+            f"password must be at least {MIN_PASSWORD_LENGTH} characters "
+            f"(got {len(password)}); use --generate to create one"
+        )
+    if username and password.casefold() == username.casefold():
+        raise ValueError("password must not be the same as the user name")
+    if len(set(password)) == 1:
+        raise ValueError("password must not repeat a single character")
 
 
 def hash_password(password: str) -> str:

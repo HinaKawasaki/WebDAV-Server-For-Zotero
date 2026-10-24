@@ -233,8 +233,7 @@ def get_stored_password(settings, username: str):
 
 def add_user(settings, username: str, password: str) -> None:
     username = _check_new_username(username)
-    if not isinstance(password, str) or not password:
-        raise ValueError("password must be a non-empty string")
+    passwords.validate_password(password, username=username)
     table = _table(settings)
     digest = passwords.hash_password(password)
     with db.connect(settings) as conn:
@@ -245,15 +244,22 @@ def add_user(settings, username: str, password: str) -> None:
                 (username, digest),
             )
         except db.DatabaseError as exc:
-            if "Duplicate entry" in str(exc) or "1062" in str(exc):
+            # MySQL/MariaDB error 1062: duplicate entry for a unique key.  Rely
+            # on the numeric code instead of matching the (localised, version
+            # dependent) message text.
+            if exc.code == 1062:
                 raise UserExistsError(f"user {username!r} already exists") from exc
             raise
     logger.info("created user %r", username)
 
 
-def set_password(settings, username: str, password: str) -> None:
+def set_password(
+    settings, username: str, password: str, *, enforce_policy: bool = True
+) -> None:
     username = _check_username(username)
-    if not isinstance(password, str) or not password:
+    if enforce_policy:
+        passwords.validate_password(password, username=username)
+    elif not isinstance(password, str) or not password:
         raise ValueError("password must be a non-empty string")
     table = _table(settings)
     digest = passwords.hash_password(password)
@@ -305,7 +311,9 @@ def authenticate(settings, username: str, password: str) -> bool:
 
     if needs_rehash:
         try:
-            set_password(settings, username, password)
+            # The stored password already authenticated, even if it is shorter
+            # than the current policy allows; upgrade it without re-checking.
+            set_password(settings, username, password, enforce_policy=False)
             logger.info("upgraded stored password of %r to scrypt", username)
         except (db.DatabaseError, UserNotFoundError):
             # A failed upgrade must never turn a valid login into a failure.

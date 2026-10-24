@@ -84,6 +84,33 @@ class SanitizeBasicAuthTests(unittest.TestCase):
     def test_missing_header_is_a_no_op(self):
         self.assertIsNone(self._sanitize(None))
 
+    def test_unpadded_payload_is_accepted_and_padded(self):
+        token = base64.b64encode(b"alice:pw").decode().rstrip("=")
+        sanitized = self._sanitize(f"Basic {token}")
+        self.assertEqual(
+            sanitized, "Basic " + base64.b64encode(b"alice:pw").decode()
+        )
+
+    def test_tabs_and_repeated_spaces_are_accepted(self):
+        token = base64.b64encode(b"alice:pw").decode()
+        canonical = f"Basic {token}"
+        for header in (f"Basic\t{token}", f"Basic   {token}", f"  Basic {token}  "):
+            self.assertEqual(self._sanitize(header), canonical, header)
+
+    def test_folded_token_is_accepted(self):
+        token = base64.b64encode(b"alice:pw").decode()
+        folded = token[:4] + "\n " + token[4:]
+        self.assertEqual(
+            self._sanitize(f"Basic {folded}"), f"Basic {token}"
+        )
+
+    def test_latin1_payload_is_reencoded_as_utf8(self):
+        token = base64.b64encode("alice:pwé".encode("latin-1")).decode()
+        sanitized = self._sanitize(f"Basic {token}")
+        self.assertIsNotNone(sanitized)
+        decoded = base64.b64decode(sanitized.split(" ", 1)[1]).decode("utf-8")
+        self.assertEqual(decoded, "alice:pwé")
+
 
 class OsErrorMappingTests(unittest.TestCase):
     def test_errno_mapping(self):
@@ -109,6 +136,62 @@ class OsErrorMappingTests(unittest.TestCase):
         self.assertIsNone(error.src_exception)
 
 
+class _StreamingGuard(RequestGuard):
+    """RequestGuard without the WsgiDAV plumbing, for stream tests."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def next_app(self, environ, start_response):
+        return self._inner(environ, start_response)
+
+
+class StreamingErrorTests(unittest.TestCase):
+    def _run(self, inner):
+        chunks = []
+
+        def start_response(status, headers, exc_info=None):
+            chunks.append(status)
+
+        try:
+            chunks.extend(_StreamingGuard(inner)({}, start_response))
+        except Exception as exc:
+            return chunks, exc
+        return chunks, None
+
+    def test_error_after_the_body_started_truncates(self):
+        def inner(environ, start_response):
+            start_response("200 OK", [("Content-Type", "text/plain")])
+            yield b"first"
+            raise OSError(errno.EIO, "disk error")
+
+        chunks, exc = self._run(inner)
+        self.assertIsNone(exc)
+        self.assertEqual([chunk for chunk in chunks if isinstance(chunk, bytes)], [b"first"])
+
+    def test_value_error_after_the_body_started_truncates(self):
+        def inner(environ, start_response):
+            start_response("200 OK", [])
+            yield b"first"
+            raise ValueError("embedded null byte")
+
+        chunks, exc = self._run(inner)
+        self.assertIsNone(exc)
+        self.assertEqual([chunk for chunk in chunks if isinstance(chunk, bytes)], [b"first"])
+
+    def test_error_before_the_first_chunk_is_a_dav_error(self):
+        from wsgidav.dav_error import DAVError
+
+        def inner(environ, start_response):
+            start_response("200 OK", [])
+            raise OSError(errno.EIO, "disk error")
+            yield b"never"
+
+        _chunks, exc = self._run(inner)
+        self.assertIsInstance(exc, DAVError)
+        self.assertEqual(exc.value, 500)
+
+
 class RequestGuardEndToEndTests(unittest.TestCase):
     """Drive the real WSGI stack, no network involved."""
 
@@ -116,7 +199,11 @@ class RequestGuardEndToEndTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.share = Path(self._tmp.name) / "share"
         self.share.mkdir()
-        self.store = {"alice": passwords.hash_password("pw")}
+        self.store = {
+            "alice": passwords.hash_password("pw"),
+            "bob": passwords.hash_password("pww"),
+            "carol": passwords.hash_password("pwé"),
+        }
         for patcher in (
             mock.patch.object(conf, "SHARE_DIR", self.share),
             # this fake database only serves the user table, so keep the DAV
@@ -169,20 +256,85 @@ class RequestGuardEndToEndTests(unittest.TestCase):
         )
         self.assertEqual(result["code"], 207)
 
-    def test_throttled_login_answers_with_retry_after(self):
+    def test_throttle_delays_guesses_but_never_the_right_password(self):
         # exhaust the default attempt budget with wrong passwords
         for _ in range(10):
             wsgi_request(
                 self.app,
                 make_environ("PROPFIND", "/alice/", credentials=("alice", "nope")),
             )
+
+        # further guesses are still rejected, now with a Retry-After hint
         result = wsgi_request(
-            self.app, make_environ("PROPFIND", "/alice/", credentials=("alice", "pw"))
+            self.app, make_environ("PROPFIND", "/alice/", credentials=("alice", "nope"))
         )
         self.assertEqual(result["code"], 401)
         headers = {name.lower(): value for name, value in result["headers"]}
         self.assertIn("retry-after", headers)
         self.assertGreaterEqual(int(headers["retry-after"]), 1)
+
+        # ...but a correct password must win.  Every client of this service
+        # shares one source address (loopback, behind the tunnel/VPN), so
+        # blocking correct credentials would let anyone lock the account out
+        # by feeding it wrong passwords.
+        result = wsgi_request(
+            self.app, make_environ("PROPFIND", "/alice/", credentials=("alice", "pw"))
+        )
+        self.assertEqual(result["code"], 207)
+
+        # the successful login cleared the accumulated failures
+        result = wsgi_request(
+            self.app, make_environ("PROPFIND", "/alice/", credentials=("alice", "nope"))
+        )
+        headers = {name.lower(): value for name, value in result["headers"]}
+        self.assertNotIn("retry-after", headers)
+
+    def test_database_outage_is_a_503_not_a_401(self):
+        def broken(_settings):
+            raise db.DatabaseError("connection refused", code=2003)
+
+        with mock.patch.object(db, "connect", broken):
+            result = wsgi_request(
+                self.app,
+                make_environ("PROPFIND", "/alice/", credentials=("alice", "pw")),
+            )
+        self.assertEqual(result["code"], 503)
+        headers = {name.lower(): value for name, value in result["headers"]}
+        self.assertIn("retry-after", headers)
+        self.assertNotIn(b"401", result["body"])
+        self.assertNotIn(b"Source exception", result["body"])
+
+    def test_nul_byte_in_a_path_is_a_400_not_a_500(self):
+        result = wsgi_request(
+            self.app,
+            make_environ(
+                "PUT", "/alice/nul\x00byte.txt", credentials=("alice", "pw"), body=b"x"
+            ),
+        )
+        self.assertEqual(result["code"], 400)
+        self.assertNotIn(b"Source exception", result["body"])
+        self.assertNotIn(b"embedded null byte", result["body"])
+
+    def test_unpadded_basic_credentials_are_accepted(self):
+        token = base64.b64encode(b"bob:pww").decode().rstrip("=")
+        result = wsgi_request(
+            self.app, make_environ("PROPFIND", "/bob/", raw_auth="Basic " + token)
+        )
+        self.assertEqual(result["code"], 207)
+
+    def test_tab_separated_basic_header_is_accepted(self):
+        token = base64.b64encode(b"alice:pw").decode()
+        result = wsgi_request(
+            self.app, make_environ("PROPFIND", "/alice/", raw_auth="Basic\t" + token)
+        )
+        self.assertEqual(result["code"], 207)
+
+    def test_latin1_basic_credentials_are_accepted(self):
+        token = base64.b64encode("carol:pwé".encode("latin-1")).decode()
+        result = wsgi_request(
+            self.app, make_environ("PROPFIND", "/carol/", raw_auth="Basic " + token)
+        )
+        self.assertEqual(result["code"], 207)
 
     def test_wrong_password_is_still_401(self):
         result = wsgi_request(

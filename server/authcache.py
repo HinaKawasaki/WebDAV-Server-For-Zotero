@@ -19,16 +19,20 @@ The trade-offs here are deliberate:
   entry at once, so a changed password stops working immediately instead of
   lingering until the TTL runs out.
 
-The generation file is ``stat()``-ed on every lookup (one cheap syscall); when
-its mtime changes the cache is cleared.  If the file cannot be created or read,
-the cache simply falls back to TTL-only invalidation.
+The generation file holds a random token (not a timestamp).  It is read on every
+lookup and the cache is cleared as soon as the token differs, so a password
+change is observed even on filesystems with coarse or preserved mtimes.  If the
+file cannot be read, the cache falls back to TTL-only invalidation (and is
+cleared once it becomes readable again).
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import logging
+import os
 import secrets
 import threading
 import time
@@ -40,21 +44,29 @@ __all__ = ["AuthCache", "invalidate"]
 
 
 def invalidate(epoch_file) -> bool:
-    """Bump the cache generation so every running server drops its entries.
+    """Write a fresh generation token so every running server drops its entries.
 
-    Touching the file is enough: the servers compare its mtime.  Returns True
-    when the file exists afterwards.
+    The write is atomic (temporary file + ``os.replace``), so a concurrent
+    reader never sees a half-written token.  Returns True on success.
     """
     if not epoch_file:
         return False
     path = Path(epoch_file)
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
+        tmp.write_text(secrets.token_hex(16) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return True
     except OSError as exc:
-        logger.warning("could not touch the auth cache generation file %s: %s", path, exc)
+        logger.warning(
+            "could not update the auth cache generation file %s: %s", path, exc
+        )
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
         return False
-    return True
 
 
 class AuthCache:
@@ -72,16 +84,16 @@ class AuthCache:
         self._lock = threading.Lock()
         self._entries: dict = {}
         self._epoch_path = Path(epoch_file) if epoch_file else None
-        self._epoch_stamp = self._stat_epoch()
+        self._generation = self._read_generation()
 
     # ------------------------------------------------------------------ #
     # internals
     # ------------------------------------------------------------------ #
-    def _stat_epoch(self):
+    def _read_generation(self):
         if self._epoch_path is None:
             return None
         try:
-            return self._epoch_path.stat().st_mtime_ns
+            return self._epoch_path.read_text(encoding="utf-8").strip()
         except OSError:
             return None
 
@@ -89,10 +101,10 @@ class AuthCache:
         """Caller must hold ``self._lock``."""
         if self._epoch_path is None:
             return
-        stamp = self._stat_epoch()
-        if stamp == self._epoch_stamp:
+        generation = self._read_generation()
+        if generation == self._generation:
             return
-        self._epoch_stamp = stamp
+        self._generation = generation
         if self._entries:
             logger.info("auth cache invalidated (%s changed)", self._epoch_path)
         self._entries.clear()

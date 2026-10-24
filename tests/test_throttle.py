@@ -106,6 +106,39 @@ class LoginThrottleTests(unittest.TestCase):
         )
         self.assertGreaterEqual(throttle.max_penalty, throttle.base_penalty)
 
+    def test_number_of_tracked_keys_is_bounded(self):
+        throttle = LoginThrottle(max_attempts=3, max_entries=10, time_source=self.clock)
+        for index in range(100):
+            throttle.record_failure(f"user{index}\x00127.0.0.1")
+        self.assertLessEqual(len(throttle), 10)
+
+    def test_failures_per_key_are_bounded(self):
+        throttle = LoginThrottle(max_attempts=3, time_source=self.clock)
+        for _ in range(500):
+            throttle.record_failure("k")
+        self.assertLessEqual(len(throttle._failures["k"]), 64)
+        self.assertEqual(throttle.retry_after("k"), 300.0)  # still capped
+
+    def test_eviction_keeps_the_account_that_is_being_attacked(self):
+        throttle = LoginThrottle(max_attempts=3, max_entries=2, time_source=self.clock)
+        for _ in range(3):
+            throttle.record_failure("victim")
+        # a flood of random user names must not evict the interesting entry
+        for index in range(50):
+            throttle.record_failure(f"random{index}")
+        self.assertTrue(throttle.is_locked("victim"))
+        self.assertLessEqual(len(throttle), 2)
+
+    def test_expired_keys_are_dropped_before_live_ones(self):
+        throttle = LoginThrottle(
+            max_attempts=3, window_seconds=10, max_entries=2, time_source=self.clock
+        )
+        throttle.record_failure("old")
+        self.clock.advance(11)
+        throttle.record_failure("fresh")
+        throttle.record_failure("extra")
+        self.assertEqual(len(throttle), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

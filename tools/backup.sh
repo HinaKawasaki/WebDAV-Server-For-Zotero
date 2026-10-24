@@ -83,9 +83,35 @@ if [ "$SKIP_DB" -eq 0 ]; then
         printf 'password=%s\n' "$db_pass"
     } >"$cnf"
 
-    info "dumping     : $db_name.$db_table"
+    # v2.03 added two optional tables (dead properties and locks).  Dump them
+    # together with the user table when they exist, so a restore brings the
+    # whole DAV state back instead of silently dropping it.
+    tables=("$db_table")
+    mysql_bin="$(command -v mysql || command -v mariadb || true)"
+    for candidate in "${WEBDAV_PROPERTIES_TABLE:-dav_properties}" \
+                     "${WEBDAV_LOCKS_TABLE:-dav_locks}"; do
+        [ -n "$candidate" ] || continue
+        case " ${tables[*]} " in
+            *" $candidate "*) continue ;;
+        esac
+        if ! [[ "$candidate" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            die "invalid table name: $candidate"
+        fi
+        if [ -z "$mysql_bin" ]; then
+            info "table       : $candidate (mysql client missing - skipped)"
+            continue
+        fi
+        if "$mysql_bin" --defaults-extra-file="$cnf" -N -B \
+            -e "SHOW TABLES FROM \`$db_name\` LIKE '$candidate'" | grep -qx "$candidate"; then
+            tables+=("$candidate")
+        else
+            info "table       : $candidate does not exist - skipped"
+        fi
+    done
+
+    info "dumping     : $db_name.${tables[*]}"
     mysqldump --defaults-extra-file="$cnf" --single-transaction --no-tablespaces \
-        "$db_name" "$db_table" | gzip >"$out"
+        "$db_name" "${tables[@]}" | gzip >"$out"
     rm -f "$cnf"
     trap - EXIT
 
@@ -113,7 +139,18 @@ case "$DATA_MODE" in
         parent="$(dirname "$DATA_DIR")"
         base="$(basename "$DATA_DIR")"
         info "archiving   : $DATA_DIR"
-        tar -czf "$out" -C "$parent" "$base"
+        # A live Zotero sync can change a file while it is being archived.
+        # GNU tar exits 1 for that (the archive is still valid), so treat it as
+        # a warning instead of aborting the whole backup.
+        if tar --warning=no-file-changed -czf "$out" -C "$parent" "$base"; then
+            :
+        else
+            rc=$?
+            if [ "$rc" -gt 1 ]; then
+                die "data archiving failed (tar exit $rc)"
+            fi
+            info "warning     : files changed during archiving; archive kept"
+        fi
         gzip -t "$out" || die "data archive is corrupt: $out"
         info "wrote       : $out ($(stat -c %s "$out") bytes)"
         mapfile -t old < <(ls -1t "$DEST"/webdav-data-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)))

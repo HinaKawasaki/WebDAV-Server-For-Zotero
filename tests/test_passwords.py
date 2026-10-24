@@ -94,5 +94,31 @@ class LegacyFormatTests(unittest.TestCase):
         self.assertFalse(passwords.looks_hashed("plaintext"))
 
 
+class PasswordPolicyTests(unittest.TestCase):
+    def test_a_long_enough_password_is_accepted(self):
+        passwords.validate_password("correct-horse-battery")
+        passwords.validate_password("pässwörd-✓-1234")
+
+    def test_too_short_is_rejected(self):
+        with self.assertRaises(ValueError):
+            passwords.validate_password("a" * (passwords.MIN_PASSWORD_LENGTH - 1))
+
+    def test_the_generated_password_satisfies_the_policy(self):
+        passwords.validate_password(passwords.generate_password())
+
+    def test_the_user_name_is_rejected(self):
+        with self.assertRaises(ValueError):
+            passwords.validate_password("alicealicealice", username="alicealicealice")
+
+    def test_a_single_repeated_character_is_rejected(self):
+        with self.assertRaises(ValueError):
+            passwords.validate_password("x" * 16)
+
+    def test_empty_and_non_string_are_rejected(self):
+        for value in ("", None, 42):
+            with self.assertRaises(ValueError):
+                passwords.validate_password(value)
+
+
 if __name__ == "__main__":
     unittest.main()
